@@ -7,8 +7,8 @@
 #token创建时选择write:packages Upload packages to github package registry 权限
 NOW_PID=$$
 INSTALL_DIR=/usr/local/bin
-URL="https://github.com/yiguihai/shadowsocks_install/raw/main"
-#URL=https://$TOKEN@raw.githubusercontent.com/yiguihai/shadowsocks_install/main
+URL="https://github.com/yiguihai/shadowsocks_install/raw/master"
+#URL=https://$TOKEN@raw.githubusercontent.com/yiguihai/shadowsocks_install/master
 HOME=/etc/ssmanager
 PORT_FILE=$HOME/port.list
 ACL_FILE=$HOME/server_block.acl
