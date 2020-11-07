@@ -18,7 +18,7 @@ systemctl status ss-main
 systemctl disable ss-main
 ```
 <details><summary><code>Screenshot</code></summary><br>
-<img src="view.zh-cn.jpg" alt="展示图" title="查看图片" width="100%" height="100%" />
+<img src="view.jpg" alt="展示图" title="查看图片" width="100%" height="100%" />
 </details>
 
 ### 注意事项
