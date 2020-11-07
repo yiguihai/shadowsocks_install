@@ -2,9 +2,9 @@ name: build
 
 on:
   #push:
-    #branches: [ main ]
+    #branches: [ master ]
   #pull_request:
-    #branches: [ main ]
+    #branches: [ master ]
   watch:
     types: started
   schedule:
@@ -226,7 +226,7 @@ jobs:
       if: success()
       continue-on-error: true
       run: |
-        git clone -b main git@github.com:yiguihai/shadowsocks_install.git
+        git clone -b master git@github.com:yiguihai/shadowsocks_install.git
         cd shadowsocks_install
         gcc -s -fPIE -O3 -o ss-tool src/main.c
         strip ss-tool
@@ -254,5 +254,5 @@ jobs:
           sha512sum -b bin/* > sha512sums
           git add sha512sums bin/* tools/*
           git commit -m "#本次更新由自动编译脚本程序上传# $(date +%Y年%m月%d日\ %X)"
-          git push -f origin main
+          git push -f origin master
         #fi
