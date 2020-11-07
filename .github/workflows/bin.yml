@@ -1,0 +1,258 @@
+name: build
+
+on:
+  #push:
+    #branches: [ main ]
+  #pull_request:
+    #branches: [ main ]
+  watch:
+    types: started
+  schedule:
+    - cron:  '0 0,8,16 * * *'
+
+jobs:
+  x86_64-unknown-linux-gnu:
+    runs-on: ubuntu-16.04
+
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+
+    - name: Install dependencies
+      continue-on-error: true
+      timeout-minutes: 3
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get install --no-install-recommends gettext build-essential autoconf libtool automake unzip git
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        mkdir -p /tmp/ss/bin /tmp/upload /tmp/tempdir
+        
+
+    - name: Configuration environment
+      run: |
+        cd $HOME
+        mkdir -p ~/.ssh
+        echo "${{ secrets.ID_RSA }}" >> ~/.ssh/id_rsa
+        #echo "${{ secrets.ID_RSA_PUB }}" >> ~/.ssh/id_rsa.pub
+        ssh-keyscan github.com > ~/.ssh/known_hosts
+        #echo "${{ secrets.KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+        chmod 0600 ~/.ssh/id_rsa
+        chmod 0644 ~/.ssh/known_hosts
+        #ssh-keyscan github.com >> ~/.ssh/known_hosts
+        git config --global user.name "${{ secrets.MY_NAME }}"
+        git config --global user.email "${{ secrets.MY_EMAIL }}"
+        #ssh -T git@github.com
+
+    - name: UPX
+      run: |
+        latest_version=$(wget -qO- https://api.github.com/repos/upx/upx/releases/latest | grep 'tag_name' | cut -d\" -f4)
+        wget --quiet --continue https://github.com/upx/upx/releases/download/$latest_version/upx-${latest_version:1}-amd64_linux.tar.xz
+        tar xJf upx*-amd64_linux.tar.xz
+        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin
+        rm -rf upx*
+        upx -V
+        wget --quiet --continue https://github.com/upx/upx/releases/download/v3.94/upx-3.94-amd64_linux.tar.xz
+        tar xJf upx*-amd64_linux.tar.xz
+        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin/upx2
+        rm -rf upx*
+        upx2 -V
+        
+    - name: Prepare Golang
+      run: |
+        latest_version="$(wget -qO- https://golang.org/dl/|grep 'download downloadBox' | grep -oP '\d+\.\d+(\.\d+)?' | head -n 1)"
+        echo "Downloading latest Go for AMD64: ${latest_version}"
+        wget --quiet --continue https://dl.google.com/go/go${latest_version}.linux-amd64.tar.gz
+        sudo tar -C /usr/local -xzf go${latest_version}.linux-amd64.tar.gz
+        rm -f go${latest_version}.linux-amd64.tar.gz
+        /usr/local/go/bin/go version
+        
+    - name: kcptun
+      run: |
+        export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        git clone --depth 1 https://github.com/xtaci/kcptun.git
+        cd kcptun
+        VERSION=`git describe --tags`
+        LDFLAGS="-X main.VERSION=$VERSION -s -w"
+        GCFLAGS=""
+        /usr/local/go/bin/go get -u github.com/shadowsocks/kcptun
+        /usr/local/go/bin/go get -u ./...
+        env GO111MODULE=auto CGO_ENABLED=0 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -mod=mod -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o kcptun-server github.com/shadowsocks/kcptun/server
+        mv -f kcptun-server /tmp/ss/bin
+        /tmp/ss/bin/kcptun-server -version
+
+    - name: simple-tls
+      run: |
+        export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        git clone --depth 1 https://github.com/IrineSistiana/simple-tls
+        cd simple-tls
+        VERSION=`git describe --tags`
+        LDFLAGS="-X main.version=$VERSION -s -w"
+        GCFLAGS=""
+        env GO111MODULE=auto CGO_ENABLED=0 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o simple-tls
+        mv -f simple-tls /tmp/ss/bin
+        /tmp/ss/bin/simple-tls -v
+
+    - name: v2ray
+      run: |
+        export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        git clone https://github.com/shadowsocks/v2ray-plugin
+        cd v2ray-plugin
+        VERSION=$(git describe --tags)
+        LDFLAGS="-X main.VERSION=$VERSION -s -w"
+        GCFLAGS=""
+        /usr/local/go/bin/go get -d -v ./...
+        env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -v -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o v2ray-plugin
+        mv -f v2ray-plugin /tmp/ss/bin
+        /tmp/ss/bin/v2ray-plugin -version
+    
+    - name: libev
+      run: |
+        latest_version="$(wget -qO- http://dist.schmorp.de/libev/|grep -oP 'libev\-\d+\.\d+\.tar\.gz' | head -n 1)"
+        wget --quiet --continue http://dist.schmorp.de/libev/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        cd ${latest_version/.tar.gz/}
+        chmod +x autogen.sh
+        ./autogen.sh
+        ./configure --prefix=/tmp/tmp
+        make -j2
+        make install
+        make clean
+        cd ..
+
+    - name: openssl
+      run: |
+        latest_version="$(wget -qO- https://www.openssl.org/source/|grep -oP 'openssl\-\d+\.\d+\.\d+\w+\.tar\.gz' | head -n 1)"
+        wget --quiet --continue https://www.openssl.org/source/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        cd ${latest_version/.tar.gz/}
+        ./Configure \
+        --prefix=/tmp/ssl \
+        linux-x86_64
+        make -j2
+        make install_sw
+        make distclean
+
+    - name: qrencode
+      run: |
+        git clone --depth 1 https://github.com/fukuchi/libqrencode
+        cd libqrencode
+        ./autogen.sh
+        ./configure --prefix=/tmp/ss --enable-static --without-png --disable-shared
+        make -j2
+        make install
+        #make clean
+        cd ..
+        /tmp/ss/bin/qrencode -V
+        
+    - name: simple-obfs
+      run: |
+        git clone --depth 1 https://github.com/shadowsocks/simple-obfs
+        cd simple-obfs
+        git submodule update --init --recursive --depth 1
+        ./autogen.sh
+        ./configure \
+        --disable-documentation \
+        --with-ev=/tmp/tmp \
+        --prefix=/tmp/ss
+        #LDFLAGS="-Wl,-static -static -static-libgcc -L/usr/lib" \
+        #CFLAGS="-I/usr/include" LIBS="-lpthread -lm"
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lev/-l:libev.a/g' {} +
+        make -j2
+        make install
+        make clean
+        cd ..
+
+    - name: proxychains-ng
+      run: |
+        git clone --depth 1 https://github.com/rofl0r/proxychains-ng
+        cd proxychains-ng
+        ./configure --prefix=/tmp/tempdir
+        make
+        make install
+        file /tmp/tempdir/lib/libproxychains4.so
+        strip /tmp/tempdir/lib/libproxychains4.so
+
+    - name: iperf
+      run: |
+        git clone --depth 1 https://github.com/esnet/iperf
+        cd iperf
+        ./configure --enable-static-bin --without-openssl --prefix=/tmp/tempdir
+        make
+        make install
+        file /tmp/tempdir/bin/iperf3
+        strip /tmp/tempdir/bin/iperf3
+        upx --best --ultra-brute -v /tmp/tempdir/bin/iperf3
+        /tmp/tempdir/bin/iperf3 -v
+        
+    - name: shadowsocks-rust
+      run: |
+        rustup update
+        rustc --version
+        git clone --depth 1 https://github.com/shadowsocks/shadowsocks-rust.git
+        cd shadowsocks-rust
+        sed -i '/\[profile\.release\]/a\opt-level \= \"z\"' Cargo.toml
+        #https://users.rust-lang.org/t/how-to-link-openssl-statically/14912
+        #https://docs.rs/openssl/0.10.30/openssl/
+        env RUSTFLAGS="-Ctarget-feature=+aes,+ssse3" OPENSSL_STATIC=yes OPENSSL_LIB_DIR=/tmp/ssl/lib OPENSSL_INCLUDE_DIR=/tmp/ssl/include cargo build --release --target x86_64-unknown-linux-gnu --features "aes-pmac-siv openssl-vendored local-redir"
+        for i in sslocal ssserver ssurl ssmanager;do
+          cp -f target/x86_64-unknown-linux-gnu/release/$i /tmp/ss/bin
+          /tmp/ss/bin/$i -V
+        done
+
+    - name: Compressed files
+      continue-on-error: true
+      run: |
+        for f in /tmp/ss/bin/*; do
+          ret=$(file $f)
+          if [ "${ret##*\, }" = 'not stripped' ]; then
+            strip $f
+          fi
+          if [[ "$ret" = *LSB* || "$ret" = *SYSV* ]]; then
+            file $f
+            readelf -d $f
+            if [ ${f##*/} = 'sslocal' -o ${f##*/} = 'ssserver' -o ${f##*/} = 'ssurl' -o ${f##*/} = 'ssmanager' ]; then
+              upx2 --best --ultra-brute -v $f
+            else
+              upx --best --ultra-brute -v $f
+            fi
+          fi
+          mv -f $f /tmp/upload
+        done
+
+    - name: Update Files
+      if: success()
+      continue-on-error: true
+      run: |
+        git clone -b main git@github.com:yiguihai/shadowsocks_install.git
+        cd shadowsocks_install
+        gcc -s -fPIE -O3 -o ss-tool src/main.c
+        strip ss-tool
+        gzexe manager.sh
+        cp -f manager.sh /tmp/upload/ss-main
+        mv -f ss-tool /tmp/upload
+        for i in bin/* ; do
+          for j in /tmp/upload/* ; do
+            if [ "${i##*/}" = "${j##*/}" ]; then
+              if [[ -f "$i" && -f "$j" ]]; then
+                unset -v a b
+                a=$(sha512sum $i|cut -d' ' -f1)
+                b=$(sha512sum $j|cut -d' ' -f1)
+                if [ "$a" != "$b" ]; then
+                  update=1
+                  cp -vf /tmp/upload/${i##*/} bin/${i##*/}
+                fi
+              fi
+            fi
+          done
+        done
+        cp -f /tmp/tempdir/lib/libproxychains4.so tools/
+        cp -f /tmp/tempdir/bin/iperf3 tools/
+        #if [ ${update:=0} -eq 1 ]; then
+          sha512sum -b bin/* > sha512sums
+          git add sha512sums bin/* tools/*
+          git commit -m "#本次更新由自动编译脚本程序上传# $(date +%Y年%m月%d日\ %X)"
+          git push -f origin main
+        #fi

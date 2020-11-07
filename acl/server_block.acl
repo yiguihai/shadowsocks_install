@@ -1,0 +1,14 @@
+# SERVERS
+# For ssserver, accepts requests from all clients by default
+[accept_all]
+
+# Blocks these clients
+[black_list]
+#1.2.3.4
+#127.0.0.1/8
+
+# Disallow these outbound addresses
+[outbound_block_list]
+127.0.0.1/8
+::1
+(^|\.)baidu.com

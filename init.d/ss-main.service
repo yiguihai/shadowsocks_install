@@ -1,0 +1,20 @@
+[Unit]
+Description=A bash Script to manager the shadowsocks-rust for multiport
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+#WorkingDirectory=~
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/ss-main start
+ExecReload=/usr/local/bin/ss-main restart
+ExecStop=/usr/local/bin/ss-main stop
+KillMode=control-group
+
+#adjust file limit if using non-root user.
+#LimitNOFILE=50000
+
+[Install]
+WantedBy=multi-user.target

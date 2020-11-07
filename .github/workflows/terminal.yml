@@ -1,0 +1,25 @@
+name: Ubuntu
+
+on:
+
+  watch:
+
+    types: started
+
+jobs:
+
+  Ubuntu:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - name: Install dependencies
+      run: |
+        echo $(date +%Y年%m月%d日\ %X)
+        sudo -E timedatectl set-timezone "Asia/Shanghai"
+        sudo -E timedatectl set-ntp true
+        echo $(date +%Y年%m月%d日\ %X)
+
+    - name: SSH connection to Actions
+      uses: yiguihai/debugger-action@master
