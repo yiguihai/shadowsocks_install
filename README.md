@@ -5,7 +5,7 @@ shadowsocks-rust版多用户安装管理脚本
 ### 使用方法
 
 ```Shell
-wget --no-check-certificate -O /usr/local/bin/ss-main https://github.com/yiguihai/shadowsocks_install/raw/main/bin/ss-main
+wget --no-check-certificate -O /usr/local/bin/ss-main https://github.com/yiguihai/shadowsocks_install/raw/master/bin/ss-main
 chmod +x /usr/local/bin/ss-main
 ss-main
 ```
