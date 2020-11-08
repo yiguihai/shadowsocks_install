@@ -1,12 +1,12 @@
 name: build
 
 on:
-  #push:
-    #branches: [ libev ]
+  push:
+    branches: [ libev ]
   #pull_request:
     #branches: [ libev ]
-  watch:
-    types: started
+  #watch:
+    #types: started
   schedule:
     - cron:  '0 0,8,16 * * *'
 
