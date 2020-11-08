@@ -1,5 +1,5 @@
 [Unit]
-Description=A bash Script to manager the shadowsocks-rust for multiport
+Description=A bash Script to manager the shadowsocks-libev for multiport
 After=network-online.target
 Wants=network-online.target
 
