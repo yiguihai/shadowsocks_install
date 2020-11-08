@@ -7,19 +7,20 @@
 #token创建时选择write:packages Upload packages to github package registry 权限
 NOW_PID=$$
 INSTALL_DIR=/usr/local/bin
-URL="https://github.com/yiguihai/shadowsocks_install/raw/master"
-#URL=https://$TOKEN@raw.githubusercontent.com/yiguihai/shadowsocks_install/master
+#TOKEN=
+URL="https://github.com/yiguihai/shadowsocks-libev_install/raw/libev"
+#URL=https://$TOKEN@raw.githubusercontent.com/yiguihai/shadowsocks-libev_install/libev
 HOME=/etc/ssmanager
+CONF_FILE=$HOME/shadowsocks-manager.conf
 PORT_FILE=$HOME/port.list
 ACL_FILE=$HOME/server_block.acl
 SOCKET_FILE=/run/ss-manager.socket
 SERVSR_FILE=/etc/systemd/system/ss-main.service
+#timedatectl set-timezone "Asia/Shanghai" && timedatectl set-ntp true 2>/dev/null
 
 Binary_file_list=(
-	sslocal
-	ssserver
-	ssurl
-	ssmanager
+	ss-server
+	ss-manager
 	obfs-server
 	kcptun-server
 	simple-tls
@@ -30,27 +31,24 @@ Binary_file_list=(
 )
 
 Encryption_method_list=(
-	table
-	plain
-	none
+	rc4-md5
 	aes-128-cfb
 	aes-192-cfb
 	aes-256-cfb
 	aes-128-ctr
 	aes-192-ctr
 	aes-256-ctr
-	rc4
-	rc4-md5
-	chacha20
+	camellia-128-cfb
+	camellia-192-cfb
+	camellia-256-cfb
 	salsa20
-	xsalsa20
+	chacha20
 	chacha20-ietf
 	aes-128-gcm
+	aes-192-gcm
 	aes-256-gcm
 	chacha20-ietf-poly1305
 	xchacha20-ietf-poly1305
-	aes-128-pmac-siv
-	aes-256-pmac-siv
 )
 
 Query_URL_list=(
@@ -107,7 +105,15 @@ is_number() {
 
 # 按任意键继续
 Press_any_key_to_continue() {
-	read -n 1 -r -s -p $'请按任意键继续或 Ctrl + C 退出\n'
+	echo "请按任意键继续或 Ctrl + C 退出"
+	local saved=""
+	saved="$(stty -g)"
+	stty -echo
+	stty cbreak
+	dd if=/dev/tty bs=1 count=1 2>/dev/null
+	stty -raw
+	stty echo
+	stty $saved
 }
 
 Curl_get_files() {
@@ -154,21 +160,14 @@ Progress_Bar() {
 	_fill=$(printf "%${_done}s")
 	_empty=$(printf "%${_left}s")
 
-	local run
-	if [ "$3" ]; then
-		[ ${#3} -gt 15 ] && run="${3:0:15}..." || run=$3
-	else
-		run='Progress'
-	fi
-
-	printf "\r${run} : [${_fill// /#}${_empty// /-}] ${_progress}%%"
-	[ ${_progress:-100} -eq 100 ] && echo
+	printf "\rProgress : [${_fill// /#}${_empty// /-}] ${_progress}%%"
 }
 
 Address_lookup() {
-	unset -v ipv4 addr
-	ipv4=$(ip -4 -o route get to 8.8.8.8 | sed -n 's/.*src \([0-9.]\+\).*/\1/p')
-	addr=$(wget -qO- -t2 -T3 -U 'curl/7.65.0' myip.ipip.net)
+	unset -v ipv4 ipv6 addr
+	ipv4=$(ip -o route get to 8.8.8.8 | sed -n 's/.*src \([0-9.]\+\).*/\1/p')
+	ipv6=$(wget -qO- -t1 -T3 ipv6.icanhazip.com)
+	addr=$(wget -qO- -t2 -T4 -U 'curl/7.65.0' myip.ipip.net)
 	addr=${addr##*\来\自\于}
 	addr=${addr:1}
 	if [ -z "$ipv4" ]; then
@@ -181,7 +180,7 @@ Address_lookup() {
 		Prompt "获取归属地位置失败！"
 		Exit
 	fi
-	if [ -z "$ipv4" ]; then
+	if [ -z "$ipv4" -a -z "$ipv6" ]; then
 		Prompt "获取IP地址失败！"
 		Exit
 	fi
@@ -223,15 +222,45 @@ Used_traffic() (
 		IFS=' '
 		for j in $i; do
 			if [ "${j%\:*}" = "$1" ]; then
+				#d=$(echo ${j#*\:} | grep -oE '[0-9]+')
 				is_number ${j#*\:} && echo -n ${j#*\:}
 			fi
 		done
 	done
 )
 
+Port_status() (
+	if [ -r $HOME/.shadowsocks_$1.pid ]; then
+		read PID <$HOME/.shadowsocks_$1.pid
+		if [ -d /proc/$PID ]; then
+			return 0
+		else
+			return 1
+		fi
+	else
+		return 1
+	fi
+)
+
+Get_IP() (
+	a=${#1}
+	if [ $a -ge 1 -a $a -le 4 ]; then
+		echo -n $((16#$1))
+	elif [ $a -eq 8 ]; then
+		echo -n $((16#${1: -2})).$((16#${1:4:2})).$((16#${1:2:2})).$((16#${1:0:2}))
+	elif [ $a -ge 10 -a $a -le 13 ]; then
+		b=${1%:*}
+		c=${1#*:}
+		echo -n $((16#${b: -2})).$((16#${b:4:2})).$((16#${b:2:2})).$((16#${b:0:2})):$((16#$c))
+	fi
+)
+
 Create_certificate() {
-	tls_key=$HOME/server.key
-	tls_cert=$HOME/server.cert
+	if [ ! -d $HOME/ssl ]; then
+		mkdir -p $HOME/ssl
+	fi
+	tls_key=$HOME/ssl/server.key
+	tls_cert=$HOME/ssl/server.cert
 	unset -v tls_common_name
 	Introduction "使用此插件前需要留意一下PEM密钥 $tls_key 与 PEM证书 $tls_cert 是否存在"
 	if [ ! -s $tls_key -o ! -s $tls_cert ]; then
@@ -246,6 +275,30 @@ Create_certificate() {
 		[ -z "$tls_common_name" ] && tls_common_name='lucky.me'
 		Prompt "$tls_common_name"
 	done
+}
+
+Authorization_verification() {
+	local temp_file=$(mktemp) text_id my_id device_id=$(dmidecode -t 4 2>/dev/null | grep ID | sed 's/.*ID://;s/ //g')
+	Wget_get_files $temp_file $URL/user_id
+	if [ -s $temp_file ]; then
+		if [ $device_id ]; then
+			text_id=$(grep -iox "$device_id" $temp_file)
+		fi
+		if [ $text_id ]; then
+			if [ $text_id = $device_id ]; then
+				my_id=$text_id
+			fi
+		fi
+		rm -f $temp_file
+	fi
+	if [ -z $my_id ]; then
+		while true; do
+			Introduction "请到 https://github.com/yiguihai/shadowsocks_install 贴上下面的ID码联系我激活正版授权"
+			Prompt "ID: $device_id"
+			Press_any_key_to_continue
+			Exit
+		done
+	fi
 }
 
 Check() {
@@ -272,14 +325,14 @@ Check() {
 		Prompt "The script does not support the package manager in this operating system."
 		Exit
 	fi
-	local package_list=(wget netstat pkill)
+	local package_list=(curl wget netstat killall dmidecode)
 	for i in ${package_list[@]}; do
 		if ! command_exists $i; then
 			case $i in
 			netstat)
 				$common_install net-tools
 				;;
-			pkill)
+			killall)
 				$common_install psmisc
 				;;
 			*)
@@ -297,11 +350,12 @@ Check() {
 			Progress_Bar $i ${#Binary_file_list[@]}
 		fi
 	done
+	echo
 	if [ ! -d $HOME ]; then
 		mkdir -p $HOME
 	fi
 	if [ ! -s $ACL_FILE ]; then
-		Wget_get_files $ACL_FILE $URL/acl/${ACL_FILE##*/}
+		Wget_get_files $ACL_FILE https://github.com/shadowsocks/shadowsocks-libev/raw/master/acl/server_block_local.acl
 	fi
 	if command_exists systemctl; then
 		if [ ! -s $SERVSR_FILE ]; then
@@ -310,39 +364,54 @@ Check() {
 			systemctl enable ${SERVSR_FILE##*/}
 			systemctl daemon-reload
 		fi
-	else
-		echo -e "\033[31m缺少systemctl支持!\033[0m"
-		Uninstall
+	fi
+	if [ ! -s $CONF_FILE ]; then
+		Address_lookup 1>/dev/null
+		local server_value='0.0.0.0'
+		[ "$ipv6" ] && server_value='["[::0]","0.0.0.0"]'
+		cat >$CONF_FILE <<-EOF
+			{
+			  "server": "$server_value",
+			  "port_password": {
+			  },
+			  "timeout": 120,
+			  "method": "aes-128-gcm",
+			  "nameserver": "8.8.8.8",
+			  "mode": "tcp_and_udp",
+			  "reuse_port": false,
+			  "fast_open": false
+			}
+		EOF
 	fi
 }
 
 Author() {
 	color=${Random_number_color[$(Generate_random_numbers 1 5)]}
-	echo -e "=========== \033[1mShadowsocks-rust\033[0m 多端口管理脚本 by \033[${color}m爱翻墙的红杏\033[0m ==========="
+	echo -e "=========== \033[1mShadowsocks-libev\033[0m 多端口管理脚本 by \033[${color}m爱翻墙的红杏\033[0m ==========="
 }
 
 Status() {
 	echo -e "服务状态: \c"
-	local ssm dae
+	local stat=$(ss-tool $SOCKET_FILE ping 2>/dev/null) dae ssm
 	if [ -s /run/ss-manager.pid ]; then
 		read ssm </run/ss-manager.pid
 	fi
-	if [ -d /proc/${ssm:=ss-manager} ]; then
+	if [ "${stat:0:4}" = 'stat' -a -d /proc/${ssm:=ss-manager} ]; then
 		if [ -s /run/ss-daemon.pid ]; then
 			read dae </run/ss-daemon.pid
 		fi
-		if [ -d /proc/${dae:=ss-daemon} ]; then
+		if [ -d /proc/${dae:=daemon} ]; then
 			echo -e "\033[32m运行中\033[0m"
 		else
 			echo -e "\033[33m守护脚本未运行\033[0m"
-			Stop
+			Stop ss-manager
 		fi
 	else
-		if [[ "$(ssmanager -V)" == "shadowsocks"* ]]; then
-			echo -e "\033[33m未运行\033[0m"
-		else
+		if [[ "$(ss-manager -h 2>/dev/null)" != *"by Max Lv"* ]]; then
 			echo -e "\033[31m系统平台版本不兼容\033[0m"
 			Uninstall
+		else
+			echo -e "\033[33m未运行\033[0m"
 		fi
 	fi
 }
@@ -350,8 +419,8 @@ Status() {
 Obfs_plugin() {
 	unset -v obfs
 	Introduction "请选择流量混淆方式"
-	local obfs_rust=(http tls)
-	select obfs in ${obfs_rust[@]}; do
+	local obfs_libev=(http tls)
+	select obfs in ${obfs_libev[@]}; do
 		if [ "$obfs" ]; then
 			Prompt "$obfs"
 			break
@@ -508,26 +577,9 @@ Shadowsocks_info_input() {
 		read -p "(默认: $sport): " -n5 server_port
 		[ -z "$server_port" ] && server_port=$sport
 		if is_number $server_port && [ $server_port -gt 0 -a $server_port -le 65535 ]; then
-			if is_number $(Used_traffic $server_port); then
-				Prompt "端口正常使用中，无法添加！删除后重试。"
-				unset -v server_port
-			fi
 			if [ "$(netstat -ln | grep LISTEN | grep ":$server_port ")" ]; then
-				Prompt "端口被其他进程占用请重新输入！"
-				unset -v server_port
-			fi
-			if [ -s $PORT_FILE ]; then
-				echo -e "$(cat $PORT_FILE)\n" | while IFS= read -r line; do
-					IFS='|'
-					for l in $line; do
-						if [ "${l#*^}" = "$server_port" ]; then
-							Prompt "端口已存在于端口列表中，请删除后重试。"
-							unset -v server_port
-						fi
-					done
-				done
-			fi
-			if [ "$server_port" ]; then
+				Prompt "此端口被其他进程占用请重新输入！"
+			else
 				Prompt "$server_port"
 				break
 			fi
@@ -549,20 +601,12 @@ Shadowsocks_info_input() {
 		fi
 	done
 
-	while true; do
-		Introduction "请输入端口流量配额 (MB): "
-		read total
-		if is_number $total && [ $total -gt 0 ]; then
-			Prompt "$total MB"
-			break
-		fi
-	done
-
 	local add_plugin
 	Introduction "需要加装插件吗? (Y/N)"
 	read -p "(默认: N): " -n1 add_plugin
 	if [[ $add_plugin =~ ^[Yy]$ ]]; then
 		echo -e "\r\n"
+		#Authorization_verification
 		plugin_list=(simple-obfs kcptun simple-tls v2ray-plugin)
 		select plugin in ${plugin_list[@]}; do
 			if [ "$plugin" ]; then
@@ -668,6 +712,21 @@ function trimString() {
 Client_Quantity() (
 	i=0
 	j=0
+	if [[ $plugin = "kcptun-server" || $plugin_opts = *quic* ]]; then
+		if [ -r $HOME/.shadowsocks_$1.pid ]; then
+			read PID <$HOME/.shadowsocks_$1.pid
+			if [ -d /proc/$PID ]; then
+				ip4_port=$(grep $PID $net_file | grep LISTEN | grep -oP '(\d{1,3}\.){3}\d{1,3}\:\d{1,5}')
+				port4=${ip4_port##*:}
+				#https://stackoverflow.com/questions/45565882/regex-validate-ipv6-address
+				ip6_port=$(grep $PID $net_file | grep LISTEN | grep -oP '([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}')
+				port6=${ip6_port##*:}
+			fi
+		fi
+	else
+		port4=$1
+		port6=$1
+	fi
 	while IFS= read -r line; do
 		((i++))
 		[ $i -le 2 ] && continue #仅跳出当前循环
@@ -702,7 +761,7 @@ Client_Quantity() (
 			esac
 		done
 		if [ $state = "ESTABLISHED" ]; then
-			if [ ${local_address##*:} = $1 -o ${local_address##*:} = $1 ]; then
+			if [ ${local_address##*:} = ${port4:-0} -o ${local_address##*:} = ${port6:-0} ]; then
 				((j++))
 				array_reme[j]=${foreign_address%:*}
 			fi
@@ -724,11 +783,7 @@ User_list_display() {
 		echo -e "$(cat $PORT_FILE)\n" | while IFS= read -r line; do
 			Parsing_User "$line"
 			if [ "$server_port" ]; then
-				if [[ $plugin != "kcptun-server" && $plugin_opts != *quic* ]]; then
-					local quantity=$(Client_Quantity $server_port)
-				else
-					local quantity='不支持'
-				fi
+				local quantity=$(Client_Quantity $server_port)
 				local used=$(Used_traffic $server_port)
 				! is_number $used && unset -v used
 				((serial++))
@@ -760,12 +815,40 @@ User_list_display() {
 Add_user() {
 	Address_lookup
 	Shadowsocks_info_input
+	local ports=$(Used_traffic $server_port)
+	if is_number $ports; then
+		Prompt "端口正常使用中，无法添加！删除后重试。"
+		Exit
+	fi
+	if [ -s $PORT_FILE ]; then
+		echo -e "$(cat $PORT_FILE)\n" | while IFS= read -r line; do
+			IFS='|'
+			for l in $line; do
+				if [ "${l#*^}" = "$server_port" ]; then
+					Prompt "端口已存在于端口列表中，请删除后重试。"
+					Exit
+				fi
+			done
+		done
+	fi
+	while true; do
+		Introduction "请输入端口流量配额 (MB): "
+		read total
+		if is_number $total && [ $total -gt 0 ]; then
+			Prompt "$total MB"
+			break
+		fi
+	done
 	Press_any_key_to_continue
 	clear
-	local sslink_v4 qrv4 name plugin_url
+	local sslink_v4 sslink_v6 qrv4 qrv6 name plugin_url
 	if [ "$ipv4" ]; then
 		echo -e "服务器(IPv4)     : \033[1;31m $ipv4 \033[0m"
 		sslink_v4="ss://$(echo -n "$method:$password@$ipv4:$server_port" | base64 -w0)"
+	fi
+	if [ "$ipv6" ]; then
+		echo -e "服务器(IPv6)     : \033[1;31m $ipv6 \033[0m"
+		sslink_v6="ss://$(echo -n "$method:$password@$ipv6:$server_port" | base64 -w0)"
 	fi
 	name=$(Url_encode "$addr")
 	echo -e "远程端口      : \033[1;31m $server_port \033[0m"
@@ -773,8 +856,8 @@ Add_user() {
 	echo -e "加密方式      : \033[1;31m $method \033[0m"
 	case $plugin in
 	simple-obfs)
-		ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\",\"plugin\":\"obfs-server\",\"plugin_opts\":\"obfs=$obfs\"}" >/dev/null
-		echo "server_port^$server_port|password^$password|method^$method|plugin^obfs-server|plugin_opts^obfs=$obfs|total^$((total * 1048576))" >>$PORT_FILE
+		ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\",\"plugin\":\"obfs-server\",\"plugin_opts\":\"obfs=$obfs\"}" >/dev/null
+		echo "server_port^$server_port|password^$password|method^$method|plugin^obfs-server|plugin_opts^obfs=$obfs|total^$((total * 1024 * 1024))" >>$PORT_FILE
 		plugin_url="?plugin=$(Url_encode "obfs-local;obfs=$obfs;obfs-host=checkappexec.microsoft.com")"
 		;;
 	kcptun)
@@ -782,20 +865,20 @@ Add_user() {
 		[ "$kcp_nocomp" = "true" ] && kcp_nocomps=';nocomp'
 		[ "$kcp_acknodelay" = "true" ] && kcp_acknodelays=';acknodelay'
 		if [[ $extra_parameters =~ ^[Yy]$ ]]; then
-			ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\",\"mode\":\"tcp_only\",\"plugin\":\"kcptun-server\",\"plugin_opts\":\"key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp;nodelay=$kcp_nodelay;interval=$kcp_interval;resend=$kcp_resend;nc=$kcp_nc$kcp_nocomps$kcp_acknodelays\"}" >/dev/null
-			echo "server_port^$server_port|password^$password|method^$method|plugin^kcptun-server|plugin_opts^key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp;nodelay=$kcp_nodelay;interval=$kcp_interval;resend=$kcp_resend;nc=$kcp_nc$kcp_nocomps$kcp_acknodelays|total^$((total * 1048576))" >>$PORT_FILE
+			ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\",\"mode\":\"tcp_only\",\"plugin\":\"kcptun-server\",\"plugin_opts\":\"key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp;nodelay=$kcp_nodelay;interval=$kcp_interval;resend=$kcp_resend;nc=$kcp_nc$kcp_nocomps$kcp_acknodelays\"}" >/dev/null
+			echo "server_port^$server_port|password^$password|method^$method|plugin^kcptun-server|plugin_opts^key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp;nodelay=$kcp_nodelay;interval=$kcp_interval;resend=$kcp_resend;nc=$kcp_nc$kcp_nocomps$kcp_acknodelays|total^$((total * 1024 * 1024))" >>$PORT_FILE
 			plugin_url="?plugin=$(Url_encode "kcptun;key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp;nodelay=$kcp_nodelay;interval=$kcp_interval;resend=$kcp_resend;nc=$kcp_nc$kcp_nocomps$kcp_acknodelays")"
 		else
-			ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\",\"mode\":\"tcp_only\",\"plugin\":\"kcptun-server\",\"plugin_opts\":\"key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp$kcp_nocomps\"}" >/dev/null
-			echo "server_port^$server_port|password^$password|method^$method|plugin^kcptun-server|plugin_opts^key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp$kcp_nocomps|total^$((total * 1048576))" >>$PORT_FILE
+			ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\",\"mode\":\"tcp_only\",\"plugin\":\"kcptun-server\",\"plugin_opts\":\"key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp$kcp_nocomps\"}" >/dev/null
+			echo "server_port^$server_port|password^$password|method^$method|plugin^kcptun-server|plugin_opts^key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp$kcp_nocomps|total^$((total * 1024 * 1024))" >>$PORT_FILE
 			plugin_url="?plugin=$(Url_encode "kcptun;key=$kcp_key;crypt=$kcp_crypt;mode=$kcp_mode;mtu=$kcp_mtu;sndwnd=$kcp_sndwnd;rcvwnd=$kcp_rcvwnd;datashard=$kcp_datashard;parityshard=$kcp_parityshard;dscp=$kcp_dscp$kcp_nocomps")"
 		fi
 		;;
 	simple-tls)
 		local tls_pds
 		[ "$tls_pd" = "true" ] && tls_pds=';pd'
-		ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\",\"plugin\":\"simple-tls\",\"plugin_opts\":\"s;key=$tls_key;cert=$tls_cert$tls_pds\"}" >/dev/null
-		echo "server_port^$server_port|password^$password|method^$method|plugin^simple-tls|plugin_opts^s;key=$tls_key;cert=$tls_cert$tls_pds|total^$((total * 1048576))" >>$PORT_FILE
+		ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\",\"plugin\":\"simple-tls\",\"plugin_opts\":\"s;key=$tls_key;cert=$tls_cert$tls_pds\"}" >/dev/null
+		echo "server_port^$server_port|password^$password|method^$method|plugin^simple-tls|plugin_opts^s;key=$tls_key;cert=$tls_cert$tls_pds|total^$((total * 1024 * 1024))" >>$PORT_FILE
 		plugin_url="?plugin=$(Url_encode "simple-tls;cca=$(base64 -w0 $tls_cert);n=$tls_common_name$tls_pds")"
 		;;
 	v2ray-plugin)
@@ -816,13 +899,13 @@ Add_user() {
 			qui='tcp_only'
 			;;
 		esac
-		ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\",\"mode\":\"${qui:=tcp_and_udp}\",\"plugin\":\"v2ray-plugin\",\"plugin_opts\":\"$v2ray_modes\"}" >/dev/null
-		echo "server_port^$server_port|password^$password|method^$method|plugin^v2ray-plugin|plugin_opts^$v2ray_modes|total^$((total * 1048576))" >>$PORT_FILE
+		ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\",\"mode\":\"${qui:=tcp_and_udp}\",\"plugin\":\"v2ray-plugin\",\"plugin_opts\":\"$v2ray_modes\"}" >/dev/null
+		echo "server_port^$server_port|password^$password|method^$method|plugin^v2ray-plugin|plugin_opts^$v2ray_modes|total^$((total * 1024 * 1024))" >>$PORT_FILE
 		plugin_url="?plugin=$(Url_encode "v2ray-plugin;$v2ray_client")"
 		;;
 	*)
-		ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\"}" >/dev/null
-		echo "server_port^$server_port|password^$password|method^$method|plugin^|plugin_opts^|total^$((total * 1048576))" >>$PORT_FILE
+		ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\"}" >/dev/null
+		echo "server_port^$server_port|password^$password|method^$method|plugin^|plugin_opts^|total^$((total * 1024 * 1024))" >>$PORT_FILE
 		;;
 	esac
 	if [ "$plugin" ]; then
@@ -831,10 +914,18 @@ Add_user() {
 			echo -e "\033[0;32m$sslink_v4$plugin_url#$name \033[0m"
 			qrv4="$sslink_v4$plugin_url#$name"
 		fi
+		if [ "$sslink_v6" ]; then
+			echo -e "\033[0;32m$sslink_v6$plugin_url#$name \033[0m"
+			qrv6="$sslink_v6$plugin_url#$name"
+		fi
 	else
 		if [ "$sslink_v4" ]; then
 			echo -e "\033[0;32m$sslink_v4#$name \033[0m"
 			qrv4="$sslink_v4#$name"
+		fi
+		if [ "$sslink_v6" ]; then
+			echo -e "\033[0;32m$sslink_v6#$name \033[0m"
+			qrv6="$sslink_v6#$name"
 		fi
 	fi
 	echo
@@ -842,6 +933,9 @@ Add_user() {
 	echo
 	if [ "$qrv4" ]; then
 		qrencode -m 2 -l L -t ANSIUTF8 -k "$qrv4"
+	fi
+	if [ "$qrv6" ]; then
+		qrencode -m 2 -l L -t ANSIUTF8 -k "$qrv6"
 	fi
 	echo
 	Press_any_key_to_continue
@@ -856,6 +950,7 @@ Delete_users() {
 			is_number $port && [ $port -gt 0 -a $port -le 65535 ] && break || unset -v port
 		done
 		local temp_file=$(mktemp)
+		#local sum=0
 		echo -e "$(cat $PORT_FILE)\n" | while IFS= read -r line; do
 			Parsing_User "$line"
 			if is_number $server_port && is_number $total; then
@@ -863,7 +958,11 @@ Delete_users() {
 					echo "server_port^$server_port|password^$password|method^$method|plugin^$plugin|plugin_opts^$plugin_opts|total^$total" >>$temp_file
 				fi
 				if [ $server_port -eq $port ]; then
+					#((sum++))
 					ss-tool $SOCKET_FILE "remove: {\"server_port\":$port}" >/dev/null
+					if ! Port_status $port; then
+						rm -f $HOME/.shadowsocks_$port.conf
+					fi
 				fi
 			fi
 		done
@@ -875,14 +974,18 @@ Delete_users() {
 }
 
 Forced_offline() {
-	while true; do
+	port=$1
+	until [ $port ]; do
 		Introduction "请输入需要强制下线的Shadowsocks远程端口"
 		read -n5 port
-		if is_number $port && [ $port -gt 0 -a $port -le 65535 ]; then
-			ss-tool $SOCKET_FILE "remove: {\"server_port\":$port}" >/dev/null
-			break
-		fi
+		is_number $port && [ $port -gt 0 -a $port -le 65535 ] && break || unset -v port
 	done
+	if Port_status $port; then
+		ss-tool $SOCKET_FILE "remove: {\"server_port\":$port}" >/dev/null
+	else
+		Prompt "下线此端口失败!"
+		Press_any_key_to_continue
+	fi
 }
 
 Daemon() {
@@ -913,13 +1016,13 @@ Daemon() {
 
 Start() {
 	echo
-	ssmanager \
-		--log-without-time \
-		--daemonize \
+	ss-manager \
+		-c $CONF_FILE \
+		-f /run/ss-manager.pid \
 		--manager-address $SOCKET_FILE \
+		--executable ss-server \
 		--acl $ACL_FILE \
-		--daemonize-pid /run/ss-manager.pid \
-		-U
+		-D $HOME
 	if [ -s $PORT_FILE ]; then
 		echo -e "$(cat $PORT_FILE)\n" | while IFS= read -r line; do
 			Parsing_User "$line"
@@ -927,30 +1030,32 @@ Start() {
 			if is_number $server_port && is_number $total && [ -z $using ] && [ $password -a $method ]; then
 				if [ "$plugin" -a "$plugin_opts" ]; then
 					echo -e "正在打开\033[32m $server_port \033[0m端口服务 传输插件 $plugin"
-					if [[ $plugin == "kcptun-server" || $plugin_opts == *quic* ]]; then
-						ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\",\"mode\":\"tcp_only\",\"plugin\":\"$plugin\",\"plugin_opts\":\"$plugin_opts\"}" >/dev/null
+					if [[ $plugin = "kcptun-server" || $plugin_opts = *quic* ]]; then
+						ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\",\"mode\":\"tcp_only\",\"plugin\":\"$plugin\",\"plugin_opts\":\"$plugin_opts\"}" >/dev/null
 					else
-						ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\",\"plugin\":\"$plugin\",\"plugin_opts\":\"$plugin_opts\"}" >/dev/null
+						ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\",\"plugin\":\"$plugin\",\"plugin_opts\":\"$plugin_opts\"}" >/dev/null
 					fi
 				else
 					echo -e "正在打开\033[32m $server_port \033[0m端口服务"
-					ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port,\"password\":\"$password\",\"method\":\"$method\"}" >/dev/null
+					ss-tool $SOCKET_FILE "add: {\"server_port\":$server_port, \"password\":\"$password\",\"method\":\"$method\"}" >/dev/null
 				fi
 			fi
 			unset -v using
 		done
+		###
 	else
 		Prompt "没有找到端口列表文件..."
 	fi
+	#(setsid $0 daemon >/dev/null 2>&1 &)
 	(setsid ss-main daemon >/dev/null 2>&1 &)
 	echo
 }
 
 Stop() {
-	for i in /run/ss-manager.pid /run/ss-daemon.pid; do
-		[ -s $i ] && read kpid <$i
-		[ -d /proc/${kpid:=abcdefg} ] && kill $kpid && rm -f $i
+	for k in $@; do
+		killall $k 2>/dev/null || pkill $k
 	done
+	rm -f /run/ss-daemon.pid
 }
 
 Update_core() {
@@ -978,11 +1083,11 @@ Uninstall() {
 	Introduction "确定要卸载吗? (Y/N)"
 	read -p "(默认: N): " -n1 delete
 	if [[ $delete =~ ^[Yy]$ ]]; then
-		Stop
+		Stop ${Binary_file_list[@]}
+		rm -rf $HOME
 		for x in ${Binary_file_list[@]}; do
 			rm -f $INSTALL_DIR/$x
 		done
-		rm -rf $HOME
 		rm -f $0
 		systemctl disable ${SERVSR_FILE##*/}
 		systemctl daemon-reload
@@ -995,72 +1100,6 @@ Uninstall() {
 	Press_any_key_to_continue
 }
 
-Speed_test() (
-	Introduction "测试数据仅供参考，测试过程中需要耐心等待请勿强行退出否则会遗留后台程序无法关闭！！！"
-	Press_any_key_to_continue
-	if [ ! -f /usr/local/bin/iperf3 ] || [ ! -x /usr/local/bin/iperf3 ]; then
-		Wget_get_files /usr/local/bin/iperf3 $URL/tools/iperf3
-		chmod +x /usr/local/bin/iperf3
-	fi
-	client_file=$(mktemp)
-	server_file=$(mktemp)
-	temp=$(mktemp)
-	log=$(mktemp)
-	i=0
-	for x in ${Encryption_method_list[@]}; do
-		((i++))
-		Progress_Bar $i ${#Encryption_method_list[@]} $x
-		pkill iperf3
-		iperf3 --server --bind 127.0.0.1 --port 5201 --daemon
-		cat >$server_file <<EOF
-{
-    "server": "127.0.0.1",
-    "server_port": 8388,
-    "method": "$x",
-    "password": "your-password",
-    "timeout": 5,
-    "dns": "google",
-    "mode": "tcp_only",
-    "no_delay": false,
-    "ipv6_first": false
-}
-EOF
-		pkill ssserver
-		#ssserver --log-without-time --config $server_file --daemonize-pid $(mktemp) --daemonize
-		(ssserver --log-without-time --config $server_file --daemonize-pid $(mktemp) --daemonize >/dev/null 2>&1 &)
-		cat >$client_file <<EOF
-{
-    "local_address": "127.0.0.1",
-    "local_port": 1080,
-    "server": "127.0.0.1",
-    "server_port": 8388,
-    "method": "$x",
-    "password": "your-password",
-    "timeout": 5,
-    "dns": "google",
-    "mode": "tcp_only",
-    "no_delay": false,
-    "ipv6_first": false
-}
-EOF
-		pkill sslocal
-		#sslocal --log-without-time --config $client_file --protocol tunnel --forward-addr 127.0.0.1:5201 --daemonize-pid $(mktemp) --daemonize
-		(sslocal --log-without-time --config $client_file --protocol tunnel --forward-addr 127.0.0.1:5201 >/dev/null 2>&1 &)
-		echo >$temp
-		#env \
-		#PROXYCHAINS_CONF_FILE=$conf \
-		#LD_PRELOAD_LD_PRELOAD=/usr/local/lib/libproxychains4.so \
-		iperf3 --client 127.0.0.1 --port 1080 --version4 --logfile $temp --bytes 100M
-		send=$(grep 'sender' $temp | awk '{print $7,$8}')
-		recv=$(grep 'receiver' $temp | awk '{print $7,$8}')
-		echo "$x,$send,$recv" >>$log
-		cat $temp
-	done
-	killall sslocal ssserver iperf3
-	printTable ',' "$(sort -t ' ' -k 2rn -k 4rn $log | sed '1i加密方式,发送,接收')"
-	Press_any_key_to_continue
-)
-
 Exit() {
 	kill -9 $NOW_PID
 }
@@ -1070,10 +1109,10 @@ if [ "$1" = "daemon" ]; then
 elif [ "$1" = "start" ]; then
 	Start
 elif [ "$1" = "restart" ]; then
-	Stop
+	Stop ss-manager
 	Start
 elif [ "$1" = "stop" ]; then
-	Stop
+	Stop ss-manager
 else
 	first=0
 	while true; do
@@ -1103,7 +1142,7 @@ EOF
 			Press_any_key_to_continue
 			;;
 		3)
-			Stop
+			Stop ss-manager
 			;;
 		4)
 			Add_user
