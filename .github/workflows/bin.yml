@@ -1,8 +1,8 @@
 name: build
 
 on:
-  push:
-    branches: [ libev ]
+  #push:
+    #branches: [ libev ]
   #pull_request:
     #branches: [ libev ]
   #watch:
