@@ -1,0 +1,89 @@
+name: update
+
+on:
+  #push:
+    #branches: [ master ]
+  watch:
+    types: started
+  #schedule:
+    #- cron:  '0 0 */10 * *'
+
+jobs:
+  
+  build:
+    
+    runs-on: ubuntu-16.04
+
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+
+    - name: Install dependencies
+      continue-on-error: true
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get install --no-install-recommends gettext build-essential autoconf libtool automake unzip git
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo -E timedatectl set-timezone "Asia/Shanghai"
+        sudo -E timedatectl set-ntp true
+        ldd --version
+
+    - name: Configuration environment
+      run: |
+        cd $HOME
+        mkdir -p ~/.ssh
+        echo "${{ secrets.ID_RSA }}" >> ~/.ssh/id_rsa
+        #echo "${{ secrets.ID_RSA_PUB }}" >> ~/.ssh/id_rsa.pub
+        echo "${{ secrets.KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+        chmod 0600 ~/.ssh/id_rsa
+        chmod 0644 ~/.ssh/known_hosts
+        #ssh-keyscan github.com >> ~/.ssh/known_hosts
+        git config --global user.name "${{ secrets.MY_NAME }}"
+        git config --global user.email "${{ secrets.MY_EMAIL }}"
+        #ssh -T git@github.com
+
+    - name: UPX
+      run: |
+        latest_version=$(wget -qO- https://api.github.com/repos/upx/upx/releases/latest | grep 'tag_name' | cut -d\" -f4)
+        [ -z ${latest_version} ]&&exit 127
+        wget --quiet --continue --show-progress https://github.com/upx/upx/releases/download/$latest_version/upx-${latest_version:1}-amd64_linux.tar.xz
+        tar xvJf upx*-amd64_linux.tar.xz
+        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin
+        rm -rf upx*
+
+    - name: SHC
+      run: |
+        git clone https://github.com/neurobin/shc
+        cd shc
+        ./autogen.sh
+        ./configure
+        make -j2
+        sudo make install
+
+
+    #- name: SSH connection to Actions
+      #uses: yiguihai/debugger-action@master
+
+    - name: Update Files
+      if: success()
+      run: |
+        git clone -b master git@github.com:yiguihai/shadowsocks-libev_install.git
+        cd shadowsocks-libev_install
+        #https://unix.stackexchange.com/questions/49053/how-do-i-add-x-days-to-date-and-get-new-date
+        #shc -r -e $(date -d "+1 Month" +%d/%m/%Y) -m "体验版脚本已过期！详情访问: https://github.com/yiguihai/shadowsocks_install" -f manager.sh -v -U -S
+        shc -r -f manager.sh -v -U -S
+        file manager.sh.x
+        readelf -d manager.sh.x
+        upx --best --ultra-brute -v manager.sh.x
+        file manager.sh.x
+        sed -i 's/UPX/CCP/g' manager.sh.x
+        sed -i 's/upx/ccp/g' manager.sh.x
+        gzexe manager.sh.x
+        mv -f manager.sh.x bin/manager-main
+        #gzexe manager.sh
+        #mv -f manager.sh bin/manager-main
+        sha512sum -b bin/* > sha512sums
+        git add sha512sums bin/manager-main
+        git commit -m "update manager-main"
+        git push -f origin master
