@@ -2,9 +2,9 @@ name: build
 
 on:
   #push:
-    #branches: [ master ]
+    #branches: [ libev ]
   #pull_request:
-    #branches: [ master ]
+    #branches: [ libev ]
   watch:
     types: started
   schedule:
@@ -52,11 +52,6 @@ jobs:
         sudo mv -f upx-*-amd64_linux/upx /usr/local/bin
         rm -rf upx*
         upx -V
-        wget --quiet --continue https://github.com/upx/upx/releases/download/v3.94/upx-3.94-amd64_linux.tar.xz
-        tar xJf upx*-amd64_linux.tar.xz
-        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin/upx2
-        rm -rf upx*
-        upx2 -V
         
     - name: Prepare Golang
       run: |
@@ -106,6 +101,24 @@ jobs:
         mv -f v2ray-plugin /tmp/ss/bin
         /tmp/ss/bin/v2ray-plugin -version
     
+    - name: mbedtls
+      run: |
+        git clone --depth 1 https://github.com/ARMmbed/mbedtls
+        cd mbedtls
+        make no_test -j2
+        make install DESTDIR=/tmp/tempdir
+        make clean
+        
+    - name: libsodium
+      run: |
+        git clone --depth 1 https://github.com/jedisct1/libsodium --branch stable
+        cd libsodium
+        ./autogen.sh
+        ./configure --prefix=/tmp/tempdir
+        make -j2
+        make install
+        make clean
+    
     - name: libev
       run: |
         latest_version="$(wget -qO- http://dist.schmorp.de/libev/|grep -oP 'libev\-\d+\.\d+\.tar\.gz' | head -n 1)"
@@ -115,25 +128,33 @@ jobs:
         cd ${latest_version/.tar.gz/}
         chmod +x autogen.sh
         ./autogen.sh
-        ./configure --prefix=/tmp/tmp
+        ./configure --prefix=/tmp/tempdir
+        make -j2
+        make install
+        make clean
+    
+    - name: libcares
+      run: |
+        git clone --depth 1 https://github.com/c-ares/c-ares
+        cd c-ares
+        ./buildconf
+        ./configure --prefix=/tmp/tempdir
         make -j2
         make install
         make clean
         cd ..
-
-    - name: openssl
+        
+    - name: libpcre
       run: |
-        latest_version="$(wget -qO- https://www.openssl.org/source/|grep -oP 'openssl\-\d+\.\d+\.\d+\w+\.tar\.gz' | head -n 1)"
-        wget --quiet --continue https://www.openssl.org/source/${latest_version}
-        tar -xzf ${latest_version}
+        latest_version="$(wget -qO- https://ftp.pcre.org/pub/pcre/|grep -oP 'pcre\-\d+\.\d+\.zip' | tail -n 1)"
+        wget --quiet --continue https://ftp.pcre.org/pub/pcre/${latest_version}
+        unzip -qq ${latest_version}
         rm -f ${latest_version}
-        cd ${latest_version/.tar.gz/}
-        ./Configure \
-        --prefix=/tmp/ssl \
-        linux-x86_64
+        cd ${latest_version/.zip/}
+        ./configure --prefix=/tmp/tempdir
         make -j2
-        make install_sw
-        make distclean
+        make install
+        make clean
 
     - name: qrencode
       run: |
@@ -143,7 +164,7 @@ jobs:
         ./configure --prefix=/tmp/ss --enable-static --without-png --disable-shared
         make -j2
         make install
-        #make clean
+        make clean
         cd ..
         /tmp/ss/bin/qrencode -V
         
@@ -155,7 +176,7 @@ jobs:
         ./autogen.sh
         ./configure \
         --disable-documentation \
-        --with-ev=/tmp/tmp \
+        --with-ev=/tmp/tempdir \
         --prefix=/tmp/ss
         #LDFLAGS="-Wl,-static -static -static-libgcc -L/usr/lib" \
         #CFLAGS="-I/usr/include" LIBS="-lpthread -lm"
@@ -163,44 +184,30 @@ jobs:
         make -j2
         make install
         make clean
-        cd ..
-
-    - name: proxychains-ng
-      run: |
-        git clone --depth 1 https://github.com/rofl0r/proxychains-ng
-        cd proxychains-ng
-        ./configure --prefix=/tmp/tempdir
-        make
-        make install
-        file /tmp/tempdir/lib/libproxychains4.so
-        strip /tmp/tempdir/lib/libproxychains4.so
-
-    - name: iperf
-      run: |
-        git clone --depth 1 https://github.com/esnet/iperf
-        cd iperf
-        ./configure --enable-static-bin --without-openssl --prefix=/tmp/tempdir
-        make
-        make install
-        file /tmp/tempdir/bin/iperf3
-        strip /tmp/tempdir/bin/iperf3
-        upx --best --ultra-brute -v /tmp/tempdir/bin/iperf3
-        /tmp/tempdir/bin/iperf3 -v
         
-    - name: shadowsocks-rust
+    - name: shadowsocks-libev
       run: |
-        rustup update
-        rustc --version
-        git clone --depth 1 https://github.com/shadowsocks/shadowsocks-rust.git
-        cd shadowsocks-rust
-        sed -i '/\[profile\.release\]/a\opt-level \= \"z\"' Cargo.toml
-        #https://users.rust-lang.org/t/how-to-link-openssl-statically/14912
-        #https://docs.rs/openssl/0.10.30/openssl/
-        env RUSTFLAGS="-Ctarget-feature=+aes,+ssse3" OPENSSL_STATIC=yes OPENSSL_LIB_DIR=/tmp/ssl/lib OPENSSL_INCLUDE_DIR=/tmp/ssl/include cargo build --release --target x86_64-unknown-linux-gnu --features "aes-pmac-siv openssl-vendored local-redir"
-        for i in sslocal ssserver ssurl ssmanager;do
-          cp -f target/x86_64-unknown-linux-gnu/release/$i /tmp/ss/bin
-          /tmp/ss/bin/$i -V
-        done
+        git clone --depth 1 https://github.com/shadowsocks/shadowsocks-libev.git
+        cd shadowsocks-libev
+        git submodule update --init --recursive --depth 1
+        ./autogen.sh
+        ./configure \
+        --disable-documentation \
+        --with-ev=/tmp/tempdir \
+        --with-sodium=/tmp/tempdir \
+        --with-cares=/tmp/tempdir \
+        --with-pcre=/tmp/tempdir \
+        --with-mbedtls=/tmp/tempdir \
+        --prefix=/tmp/ss
+        #LDFLAGS="-Wl,-static -static -static-libgcc -L/usr/lib" \
+        #CFLAGS="-I/usr/include" LIBS="-lpthread -lm"
+        #查找替换 链接第三方静态库
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lev  -lcares -lsodium -lmbedcrypto -lpcre/-l:libev.a  -l:libcares.a -l:libsodium.a -l:libmbedcrypto.a -l:libpcre.a/g' {} +
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lev -lsodium/-l:libev.a -l:libsodium.a/g' {} +
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lcares/-l:libcares.a/g' {} +      
+        make -j2
+        make install
+        make clean
 
     - name: Compressed files
       continue-on-error: true
@@ -213,11 +220,7 @@ jobs:
           if [[ "$ret" = *LSB* || "$ret" = *SYSV* ]]; then
             file $f
             readelf -d $f
-            if [ ${f##*/} = 'sslocal' -o ${f##*/} = 'ssserver' -o ${f##*/} = 'ssurl' -o ${f##*/} = 'ssmanager' ]; then
-              upx2 --best --ultra-brute -v $f
-            else
-              upx --best --ultra-brute -v $f
-            fi
+            upx --best --ultra-brute -v $f
           fi
           mv -f $f /tmp/upload
         done
@@ -226,7 +229,7 @@ jobs:
       if: success()
       continue-on-error: true
       run: |
-        git clone -b master git@github.com:yiguihai/shadowsocks_install.git
+        git clone -b libev git@github.com:yiguihai/shadowsocks_install.git
         cd shadowsocks_install
         gcc -s -fPIE -O3 -o ss-tool src/main.c
         strip ss-tool
@@ -248,11 +251,9 @@ jobs:
             fi
           done
         done
-        cp -f /tmp/tempdir/lib/libproxychains4.so tools/
-        cp -f /tmp/tempdir/bin/iperf3 tools/
         #if [ ${update:=0} -eq 1 ]; then
           sha512sum -b bin/* > sha512sums
-          git add sha512sums bin/* tools/*
+          git add sha512sums bin/*
           git commit -m "#本次更新由自动编译脚本程序上传# $(date +%Y年%m月%d日\ %X)"
-          git push -f origin master
+          git push -f origin libev
         #fi
