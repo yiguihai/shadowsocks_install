@@ -919,7 +919,7 @@ Add_user() {
 	echo -e "[\033[41;37mFBI WARNING\033[0m]\033[0;33m以上链接信息拿笔记好！！！\033[0m"
 	echo
 	if [ "$qrv4" ]; then
-	    ssurl -d "$qrv4"
+		ssurl -d "$qrv4"
 		qrencode -m 2 -l L -t ANSIUTF8 -k "$qrv4"
 	fi
 	echo
