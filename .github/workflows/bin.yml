@@ -152,6 +152,18 @@ jobs:
         #make install_sw
         #make distclean
 
+    - name: PHP
+      run: |
+        latest_version="$(wget -qO- https://www.php.net/downloads/|grep -oP 'php\-\d+\.\d+\.\d+\.tar.gz' | head -n 1)"
+        wget --quiet --continue https://www.php.net/distributions/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        cd ${latest_version/.tar.gz/}
+        ./buildconf
+        ./configure --enable-static=yes --enable-shared=no --enable-fpm --with-mysql --prefix=/tmp/php
+        make install
+        make clean
+
     - name: nginx-ngx_brotli
       run: |
         git clone --recursive https://github.com/google/ngx_brotli /tmp/ngx_brotli
