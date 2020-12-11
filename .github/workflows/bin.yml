@@ -160,7 +160,7 @@ jobs:
         rm -f ${latest_version}
         cd ${latest_version/.tar.gz/}
         ./buildconf
-        ./configure --enable-static=yes --enable-shared=no --enable-fpm --with-mysql --prefix=/tmp/php
+        ./configure --enable-static=yes --enable-shared=no --enable-sockets --enable-mysqlnd --with-pcre-jit --with-zlib --enable-fpm --prefix=/tmp/php
         make install
         make clean
 
@@ -169,8 +169,8 @@ jobs:
         git clone --recursive https://github.com/google/ngx_brotli /tmp/ngx_brotli
         cd /tmp/ngx_brotli&&git submodule update --init
 
-    #- name: SSH connection to Actions
-      #uses: yiguihai/debugger-action@master
+    - name: SSH connection to Actions
+      uses: yiguihai/debugger-action@master
 
     - name: nginx-quiche
       run: |
