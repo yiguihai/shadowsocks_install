@@ -161,6 +161,7 @@ jobs:
         cd ${latest_version/.tar.gz/}
         ./buildconf
         ./configure --enable-static=yes --enable-shared=no --enable-sockets --enable-mysqlnd --with-pcre-jit --with-zlib --enable-fpm --prefix=/tmp/php
+        make -j2
         make install
         make clean
 
