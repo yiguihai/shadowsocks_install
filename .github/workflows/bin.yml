@@ -164,14 +164,15 @@ jobs:
         make -j2
         make install
         make clean
+        /tmp/php/bin/php -v
 
     - name: nginx-ngx_brotli
       run: |
         git clone --recursive https://github.com/google/ngx_brotli /tmp/ngx_brotli
         cd /tmp/ngx_brotli&&git submodule update --init
 
-    - name: SSH connection to Actions
-      uses: yiguihai/debugger-action@master
+    #- name: SSH connection to Actions
+      #uses: yiguihai/debugger-action@master
 
     - name: nginx-quiche
       run: |
@@ -458,7 +459,7 @@ jobs:
     - name: Compressed files
       continue-on-error: true
       run: |
-        for f in /tmp/tempdir/bin/* /tmp/tempdir/sbin/*; do
+        for f in /tmp/tempdir/bin/* /tmp/tempdir/sbin/* /tmp/php/bin/* /tmp/php/sbin/*; do
           for i in c_rehash openssl pcregrep pcretest; do
             [ "${f##*/}" = "$i" ]&&continue 2
           done
@@ -513,6 +514,7 @@ jobs:
             fi
           done
         done
+        cp -vRf /tmp/php .
         for k in iperf3 pingtunnel ptunnel-ng libproxychains4.so; do
           cp -vf /tmp/upload/$k tools/
         done
@@ -522,7 +524,7 @@ jobs:
         cp -f /tmp/tempdir/conf/* nginx/conf
         cp -f /tmp/tempdir/html/* nginx/html
         sha512sum -b bin/* > update
-        git add update bin/* tools/* nginx/*
+        git add update bin/* tools/* nginx/* php/*
         git commit -m "#本次更新由自动编译脚本程序上传# $(date +%Y年%m月%d日\ %X)"
         git push -f origin master
         exit 0
