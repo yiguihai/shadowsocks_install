@@ -386,7 +386,7 @@ jobs:
         git clone --depth 1 https://github.com/shadowsocks/shadowsocks-rust.git
         cd shadowsocks-rust
         #sed -i 's/upgrade-to-tokio-0.3/main/g' Cargo.toml
-        sed -i '/\[profile\.release\]/a\opt-level \= \"z\"' Cargo.toml
+        #sed -i '/\[profile\.release\]/a\opt-level \= \"z\"' Cargo.toml
         #https://users.rust-lang.org/t/how-to-link-openssl-statically/14912
         #https://docs.rs/openssl/0.10.30/openssl/
         #env RUSTFLAGS="-Ctarget-feature=+aes,+ssse3" OPENSSL_STATIC=1 OPENSSL_LIB_DIR=/tmp/tempdir/lib OPENSSL_INCLUDE_DIR=/tmp/tempdir/include SODIUM_LIB_DIR=/tmp/tempdir/lib cargo +nightly build --release --target x86_64-unknown-linux-gnu --features "local-socks4 local-http local-tunnel local-redir trust-dns"
