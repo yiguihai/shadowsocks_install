@@ -1,0 +1,515 @@
+name: build
+
+on:
+  #push:
+    #branches: [ master ]
+  #pull_request:
+    #branches: [ master ]
+  watch:
+    types: started
+  schedule:
+    #- cron:  '0 0,8,16 * * *'
+    - cron:  '0 0 1,15,30 * *'
+
+jobs:
+  x86_64-unknown-linux-gnu:
+    runs-on: ubuntu-16.04
+
+    #if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+
+    - name: Install dependencies
+      continue-on-error: true
+      timeout-minutes: 3
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get install --no-install-recommends gettext build-essential autoconf libtool automake unzip git cmake mercurial
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        mkdir -p /tmp/upload /tmp/tempdir
+        rustup update
+        rustup install nightly
+        rustc --version
+        rustup target add x86_64-unknown-linux-gnu
+        
+
+    - name: Configuration environment
+      run: |
+        cd $HOME
+        mkdir -p ~/.ssh
+        echo "${{ secrets.ID_RSA }}" >> ~/.ssh/id_rsa
+        #echo "${{ secrets.ID_RSA_PUB }}" >> ~/.ssh/id_rsa.pub
+        ssh-keyscan github.com > ~/.ssh/known_hosts
+        #echo "${{ secrets.KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+        chmod 0600 ~/.ssh/id_rsa
+        chmod 0644 ~/.ssh/known_hosts
+        #ssh-keyscan github.com >> ~/.ssh/known_hosts
+        git config --global user.name "${{ secrets.MY_NAME }}"
+        git config --global user.email "${{ secrets.MY_EMAIL }}"
+        #ssh -T git@github.com
+
+    - name: UPX
+      run: |
+        latest_version=$(wget -qO- https://api.github.com/repos/upx/upx/releases/latest | grep 'tag_name' | cut -d\" -f4)
+        wget --quiet --continue https://github.com/upx/upx/releases/download/$latest_version/upx-${latest_version:1}-amd64_linux.tar.xz
+        tar xJf upx*-amd64_linux.tar.xz
+        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin
+        rm -rf upx*
+        upx -V
+        wget --quiet --continue https://github.com/upx/upx/releases/download/v3.95/upx-3.95-amd64_linux.tar.xz
+        tar xJf upx*-amd64_linux.tar.xz
+        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin/upx2
+        rm -rf upx*
+        upx2 -V
+        
+    - name: Prepare Golang
+      run: |
+        latest_version="$(wget -qO- https://golang.org/dl/|grep 'download downloadBox' | grep -oP '\d+\.\d+(\.\d+)?' | head -n 1)"
+        echo "Downloading latest Go for AMD64: ${latest_version}"
+        wget --quiet --continue https://dl.google.com/go/go${latest_version}.linux-amd64.tar.gz
+        sudo tar -C /usr/local -xzf go${latest_version}.linux-amd64.tar.gz
+        rm -f go${latest_version}.linux-amd64.tar.gz
+        /usr/local/go/bin/go version
+
+    - name: shfmt
+      run: |
+        export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        /usr/local/go/bin/go env
+        GO111MODULE=on /usr/local/go/bin/go get mvdan.cc/sh/v3/cmd/shfmt
+        sudo cp -f $(/usr/local/go/bin/go env GOPATH)/bin/shfmt /usr/local/bin
+        shfmt -version
+    
+    - name: libev
+      run: |
+        latest_version="$(wget -qO- http://dist.schmorp.de/libev/|grep -oP 'libev\-\d+\.\d+\.tar\.gz' | head -n 1)"
+        wget --quiet --continue http://dist.schmorp.de/libev/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        cd ${latest_version/.tar.gz/}
+        chmod +x autogen.sh
+        ./autogen.sh
+        ./configure --prefix=/tmp/tempdir
+        make -j2
+        make install
+        make clean
+
+    - name: mbedtls
+      run: |
+        git clone --depth 1 https://github.com/ARMmbed/mbedtls
+        cd mbedtls
+        make no_test -j2
+        make install DESTDIR=/tmp/tempdir
+        make clean
+        
+    - name: zlib
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/madler/zlib
+        cd zlib
+        ./configure --prefix=/tmp/tempdir
+        make -j2
+        make install
+        make distclean
+
+    - name: libpcre
+      run: |
+        cd /tmp
+        latest_version="$(wget -qO- https://ftp.pcre.org/pub/pcre/|grep -oP 'pcre\-\d+\.\d+\.zip' | tail -n 1)"
+        wget --quiet --continue https://ftp.pcre.org/pub/pcre/${latest_version}
+        unzip -qq ${latest_version}
+        rm -f ${latest_version}
+        mv ${latest_version/.zip/} libpcre
+        cd libpcre
+        ./configure --prefix=/tmp/tempdir
+        make -j2
+        make install
+        make clean
+
+    #- name: libsodium
+      #run: |
+        #git clone --depth 1 https://github.com/jedisct1/libsodium --branch stable
+        #cd libsodium
+        #./autogen.sh
+        #./configure --prefix=/tmp/tempdir
+        #make -j2
+        #make install
+        #make clean
+
+    - name: openssl
+      run: |
+        cd /tmp
+        latest_version="$(wget -qO- https://www.openssl.org/source/|grep -oP 'openssl\-\d+\.\d+\.\d+\w+\.tar\.gz' | head -n 1)"
+        wget --quiet --continue https://www.openssl.org/source/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        mv ${latest_version/.tar.gz/} openssl
+        #cd openssl
+        #./Configure \
+        #--prefix=/tmp/tempdir \
+        #linux-x86_64
+        #make -j2
+        #make install_sw
+        #make distclean
+
+    - name: nginx-ngx_brotli
+      run: |
+        git clone --recursive https://github.com/google/ngx_brotli /tmp/ngx_brotli
+        cd /tmp/ngx_brotli&&git submodule update --init
+
+    #- name: SSH connection to Actions
+      #uses: yiguihai/debugger-action@master
+
+    - name: nginx-quiche
+      run: |
+        #curl -O https://nginx.org/download/nginx-1.16.1.tar.gz
+        #tar xvzf nginx-1.16.1.tar.gz
+        git clone --recursive https://github.com/cloudflare/quiche
+        #cd nginx-1.16.1
+        hg clone https://hg.nginx.org/nginx
+        cd nginx
+        patch -p01 < ../quiche/extras/nginx/nginx-1.16.patch
+        #./configure \
+        ./auto/configure \
+        --with-cc-opt='-Wno-error=type-limits' \
+        --build="quiche-$(git --git-dir=../quiche/.git rev-parse --short HEAD)" \
+        --with-debug \
+        --prefix=/tmp/tempdir \
+        --with-zlib=/tmp/zlib \
+        --with-pcre=/tmp/libpcre \
+        --with-openssl=../quiche/deps/boringssl \
+        --with-quiche=../quiche \
+        --sbin-path=/tmp/tempdir/sbin/nginx \
+        --error-log-path=/var/log/nginx_error.log \
+        --http-log-path=/var/log/nginx_access.log \
+        --http-client-body-temp-path=/tmp/proxy_temp \
+        --http-proxy-temp-path=/tmp/proxy_temp \
+        --http-fastcgi-temp-path=/tmp/fastcgi_temp \
+        --http-uwsgi-temp-path=/tmp/uwsgi_temp \
+        --http-scgi-temp-path=/tmp/scgi_temp \
+        --modules-path=/etc/ssmanager/temp/modules \
+        --lock-path=/var/log/nginx.lock \
+        --pid-path=/run/nginx.pid \
+        --user=root \
+        --group=root \
+        --with-pcre \
+        --with-stream \
+        --with-pcre-jit \
+        --with-threads \
+        --with-http_auth_request_module \
+        --with-http_realip_module \
+        --with-http_stub_status_module \
+        --with-http_ssl_module \
+        --with-stream_ssl_module \
+        --with-stream_ssl_preread_module \
+        --with-http_v2_module \
+        --with-http_v3_module \
+        --add-module=/tmp/ngx_brotli
+        make -j2
+        make install
+        make clean
+        /tmp/tempdir/sbin/nginx -V
+
+    #- name: boringssl
+      #timeout-minutes: 5 # Times out after 5 minute
+      #run: |
+        #cd /tmp
+        #export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64" GO_EXECUTABLE="/usr/local/go/bin/go"
+        #git clone --depth 1 https://github.com/google/boringssl
+        #mkdir -p boringssl/build
+        #cd boringssl/build
+        #cmake -DCMAKE_INSTALL_PREFIX=/tmp/tempdir --install /tmp/tempdir --prefix /tmp/tempdir ../
+        #make -j2
+        #make install
+
+    #- name: nginx-quic
+      #run: |
+        #wget https://hg.nginx.org/nginx-quic/archive/quic.tar.gz
+        #tar -xzf quic.tar.gz
+        #cd nginx-quic-quic
+        #gcc版本低出错，已答复https://trac.nginx.org/nginx/ticket/2104
+        #hg clone -b quic https://hg.nginx.org/nginx-quic
+        #cd nginx-quic
+        #export CFLAGS="-g2 -O0" #加这个竟然就通过了
+        #./auto/configure \
+        #--with-debug \
+        #--with-cc-opt='-Wno-error=type-limits -I/tmp/boringssl/include' \
+        #--with-ld-opt="-L/tmp/boringssl/build/ssl -L/tmp/boringssl/build/crypto" \
+        #--prefix=/tmp/tempdir \
+        #--with-zlib=/tmp/zlib \
+        #--with-pcre=/tmp/libpcre \
+        #--sbin-path=/tmp/tempdir/sbin/nginx \
+        #--error-log-path=/var/log/nginx_error.log \
+        #--http-log-path=/var/log/nginx_access.log \
+        #--http-client-body-temp-path=/tmp/proxy_temp \
+        #--http-proxy-temp-path=/tmp/proxy_temp \
+        #--http-fastcgi-temp-path=/tmp/fastcgi_temp \
+        #--http-uwsgi-temp-path=/tmp/uwsgi_temp \
+        #--http-scgi-temp-path=/tmp/scgi_temp \
+        #--modules-path=/etc/ssmanager/temp/modules \
+        #--lock-path=/var/log/nginx.lock \
+        #--pid-path=/run/nginx.pid \
+        #--user=root \
+        #--group=root \
+        #--with-pcre \
+        #--with-stream \
+        #--with-pcre-jit \
+        #--with-threads \
+        #--with-http_auth_request_module \
+        #--with-http_ssl_module \
+        #--with-stream_ssl_module \
+        #--with-stream_ssl_preread_module \
+        #--with-http_v2_module \
+        #--with-http_v3_module \
+        #--with-http_quic_module  \
+        #--with-stream_quic_module
+        #make -j2
+        #make install
+        #make clean
+        #/tmp/tempdir/sbin/nginx -V
+
+    - name: ptunnel-ng
+      run: |
+        git clone --depth 1 https://github.com/lnslbrty/ptunnel-ng
+        cd ptunnel-ng
+        autoreconf -fiv
+        ./configure \
+        LDFLAGS="-static -L/tmp/tempdir/lib" \
+        CFLAGS="-I/tmp/tempdir/include" \
+        --prefix=/tmp/tempdir
+        make -j2
+        make install
+        make clean
+
+    - name: qrencode
+      run: |
+        git clone --depth 1 https://github.com/fukuchi/libqrencode
+        cd libqrencode
+        ./autogen.sh
+        ./configure --prefix=/tmp/tempdir --enable-static --without-png --disable-shared
+        make -j2
+        make install
+        make clean
+        /tmp/tempdir/bin/qrencode -V
+        
+    - name: simple-obfs
+      run: |
+        git clone --depth 1 https://github.com/shadowsocks/simple-obfs
+        cd simple-obfs
+        git submodule update --init --recursive --depth 1
+        ./autogen.sh
+        ./configure \
+        --disable-documentation \
+        --with-ev=/tmp/tempdir \
+        --prefix=/tmp/tempdir
+        #LDFLAGS="-Wl,-static -static -static-libgcc -L/usr/lib" \
+        #CFLAGS="-I/usr/include" LIBS="-lpthread -lm"
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lev/-l:libev.a/g' {} +
+        make -j2
+        make install
+        make clean
+
+    - name: proxychains-ng
+      run: |
+        git clone --depth 1 https://github.com/rofl0r/proxychains-ng
+        cd proxychains-ng
+        ./configure --prefix=/tmp/tempdir
+        make -j2
+        make install
+
+    - name: iperf
+      run: |
+        git clone --depth 1 https://github.com/esnet/iperf
+        cd iperf
+        ./configure --enable-static-bin --without-openssl --prefix=/tmp/tempdir
+        make -j2
+        make install
+        /tmp/tempdir/bin/iperf3 -v
+
+    #- name: nginx
+      #run: |
+        #latest_version="$(wget -qO- http://nginx.org/en/download.html|grep -oP 'nginx\-\d+\.\d+\.\d+' | head -n 1)"
+        #wget --quiet --continue http://nginx.org/download/${latest_version}.tar.gz
+        #tar -xzf ${latest_version}.tar.gz
+        #rm -f ${latest_version}.tar.gz
+        #cd ${latest_version}
+        #./configure \
+        #--with-cc-opt='-O3 -Wl,-Bstatic -lcrypt -lssl -lpcre -Wl,-Bdynamic' \
+        #--prefix=/tmp/tempdir \
+        #--with-zlib=/tmp/zlib \
+        #--with-openssl=/tmp/openssl \
+        #--with-pcre=/tmp/libpcre \
+        #--sbin-path=/tmp/tempdir/sbin/nginx \
+        #--error-log-path=/var/log/nginx_error.log \
+        #--http-log-path=/var/log/nginx_access.log \
+        #--http-client-body-temp-path=/tmp/proxy_temp \
+        #--http-proxy-temp-path=/tmp/proxy_temp \
+        #--http-fastcgi-temp-path=/tmp/fastcgi_temp \
+        #--http-uwsgi-temp-path=/tmp/uwsgi_temp \
+        #--http-scgi-temp-path=/tmp/scgi_temp \
+        #--modules-path=/etc/ssmanager/temp/modules \
+        #--lock-path=/var/log/nginx.lock \
+        #--pid-path=/run/nginx.pid \
+        #--user=root \
+        #--group=root \
+        #--with-pcre \
+        #--with-stream \
+        #--with-pcre-jit \
+        #--with-file-aio \
+        #--with-threads \
+        #--with-http_auth_request_module \
+        #--with-http_ssl_module \
+        #--with-stream_ssl_module \
+        #--with-stream_ssl_preread_module \
+        #--with-http_v2_module \
+        #--with-http_gunzip_module
+        #make -j2
+        #make install
+        #make clean
+        #/tmp/tempdir/sbin/nginx -V
+
+    - name: shadowsocksr-libev
+      run: |
+        git clone --depth 1 https://github.com/shadowsocksrr/shadowsocksr-libev
+        cd shadowsocksr-libev
+        ./autogen.sh
+        ./configure --with-mbedtls=/tmp/tempdir --disable-documentation --with-pcre=/tmp/tempdir --with-crypto-library=mbedtls --prefix=/tmp/tempdir
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lmbedcrypto -lm -lpcre/-lmbedcrypto -lm -l:libpcre.a/g' {} +
+        make -j2
+        make install
+        make clean
+
+    - name: shadowsocks-rust
+      continue-on-error: true
+      run: |    
+        #rustc --target=x86_64-unknown-linux-gnu --print target-cpus
+        git clone --depth 1 https://github.com/shadowsocks/shadowsocks-rust.git
+        cd shadowsocks-rust
+        #sed -i 's/upgrade-to-tokio-0.3/main/g' Cargo.toml
+        sed -i '/\[profile\.release\]/a\opt-level \= \"z\"' Cargo.toml
+        #https://users.rust-lang.org/t/how-to-link-openssl-statically/14912
+        #https://docs.rs/openssl/0.10.30/openssl/
+        #env RUSTFLAGS="-Ctarget-feature=+aes,+ssse3" OPENSSL_STATIC=1 OPENSSL_LIB_DIR=/tmp/tempdir/lib OPENSSL_INCLUDE_DIR=/tmp/tempdir/include SODIUM_LIB_DIR=/tmp/tempdir/lib cargo +nightly build --release --target x86_64-unknown-linux-gnu --features "local-socks4 local-http local-tunnel local-redir trust-dns"
+        cargo +nightly build --release --target x86_64-unknown-linux-gnu --features "local-socks4 local-http local-tunnel local-redir trust-dns"
+        for i in sslocal ssserver ssurl ssmanager;do
+          cp -vf target/x86_64-unknown-linux-gnu/release/$i /tmp/tempdir/bin
+          /tmp/tempdir/bin/$i -V
+        done
+
+    - name: pingtunnel
+      run: |
+        export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        git clone --depth 1 https://github.com/esrrhs/pingtunnel.git
+        cd pingtunnel
+        /usr/local/go/bin/go get -d -v ./...
+        env CGO_ENABLED=1 GO111MODULE=auto GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -ldflags "-s -w" -o pingtunnel
+        cp -vf pingtunnel /tmp/tempdir/bin
+        
+    - name: kcptun
+      run: |
+        export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        git clone --depth 1 https://github.com/xtaci/kcptun.git
+        cd kcptun
+        VERSION=`git describe --tags`
+        LDFLAGS="-X main.VERSION=$VERSION -s -w"
+        /usr/local/go/bin/go get -u github.com/shadowsocks/kcptun
+        /usr/local/go/bin/go get -u ./...
+        env GO111MODULE=auto CGO_ENABLED=0 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -mod=mod -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o kcptun-server github.com/shadowsocks/kcptun/server
+        cp -vf kcptun-server /tmp/tempdir/bin
+        /tmp/tempdir/bin/kcptun-server -version
+
+    - name: simple-tls
+      run: |
+        export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        git clone --depth 1 https://github.com/IrineSistiana/simple-tls
+        cd simple-tls
+        VERSION=`git describe --tags`
+        LDFLAGS="-X main.version=$VERSION -s -w"
+        GCFLAGS=""
+        env GO111MODULE=auto CGO_ENABLED=0 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o simple-tls
+        cp -vf simple-tls /tmp/tempdir/bin
+        /tmp/tempdir/bin/simple-tls -v
+
+    - name: v2ray
+      run: |
+        export PATH=$PATH:/usr/local/go/bin GOROOT="/usr/local/go" GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        git clone --depth 1 https://github.com/shadowsocks/v2ray-plugin.git
+        cd v2ray-plugin
+        LDFLAGS="-X main.VERSION=dev -s -w"
+        GCFLAGS=""
+        /usr/local/go/bin/go get -d -v ./...
+        env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -v -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o v2ray-plugin
+        cp -vf v2ray-plugin /tmp/tempdir/bin
+        /tmp/tempdir/bin/v2ray-plugin -version
+
+    - name: Compressed files
+      continue-on-error: true
+      run: |
+        for f in /tmp/tempdir/bin/* /tmp/tempdir/sbin/*; do
+          for i in c_rehash openssl pcregrep pcretest; do
+            [ "${f##*/}" = "$i" ]&&continue 2
+          done
+          [[ "${f##*/}" = "mbedtls"* ]]&&continue
+          ret=$(file $f)
+          if [ "${ret##*\, }" = 'not stripped' ]; then
+            strip $f
+          fi
+          if [[ "$ret" = *LSB* || "$ret" = *SYSV* ]]; then
+            file $f
+            readelf -d $f
+            if [ ${f##*/} = 'sslocal' -o ${f##*/} = 'ssserver' -o ${f##*/} = 'ssurl' -o ${f##*/} = 'ssmanager' ]; then
+              upx2 --best --ultra-brute -v $f
+            else
+              upx --best --ultra-brute -v $f
+            fi
+          fi
+          cp -vf $f /tmp/upload
+        done
+        cp -vf /tmp/tempdir/lib/libproxychains4.so /tmp/upload
+        file /tmp/upload/libproxychains4.so
+        strip /tmp/upload/libproxychains4.so
+
+    - name: Update Files
+      if: success()
+      continue-on-error: true
+      run: |
+        git clone -b master git@github.com:yiguihai/shadowsocks_install.git
+        cd shadowsocks_install
+        gcc -s -fPIE -O3 -o ss-tool src/main.c
+        strip ss-tool
+        mv -f ss-tool /tmp/upload
+        shfmt -l -s -w manager_beta.sh
+        if ! sha512sum -c version; then
+          sha512sum -b manager_beta.sh > version
+          git add manager_beta.sh version
+          cp -vf manager_beta.sh /tmp
+          gzexe /tmp/manager_beta.sh
+          cp -vf /tmp/manager_beta.sh /tmp/upload/ss-main
+        fi
+        for i in bin/* ; do
+          for j in /tmp/upload/* ; do
+            if [ "${i##*/}" = "${j##*/}" ]; then
+              if [[ -f "$i" && -f "$j" ]]; then
+                unset -v a b
+                a=$(sha512sum $i|cut -d' ' -f1)
+                b=$(sha512sum $j|cut -d' ' -f1)
+                if [ "$a" != "$b" ]; then
+                  cp -vf /tmp/upload/${i##*/} bin/${i##*/}
+                fi
+              fi
+            fi
+          done
+        done
+        for k in iperf3 pingtunnel ptunnel-ng libproxychains4.so; do
+          cp -vf /tmp/upload/$k tools/
+        done
+        cp -vf /tmp/upload/ss-redir tools/ssr-redir
+        cp -vf /tmp/upload/ss-local tools/ssr-local
+        cp -vf /tmp/upload/nginx tools/nginx
+        cp -f /tmp/tempdir/conf/* nginx/conf
+        cp -f /tmp/tempdir/html/* nginx/html
+        sha512sum -b bin/* > update
+        git add update bin/* tools/* nginx/*
+        git commit -m "#本次更新由自动编译脚本程序上传# $(date +%Y年%m月%d日\ %X)"
+        git push -f origin master
+        exit 0

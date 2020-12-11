@@ -1,0 +1,414 @@
+name: build
+
+on:
+  push:
+    branches: [ master ]
+  #pull_request:
+    #branches: [ master ]
+  #watch:
+    #types: started
+  schedule:
+    - cron:  '0 0 28 * *'
+
+jobs:
+  arm_cortex-a9:
+    runs-on: ubuntu-latest
+
+    if: github.event.repository.owner.id == github.event.sender.id
+    
+    env:
+      URL: https://downloads.openwrt.org/snapshots/targets/bcm53xx/generic/openwrt-sdk-bcm53xx-generic_gcc-8.4.0_musl_eabi.Linux-x86_64.tar.xz #需要修改
+
+    
+    steps:
+
+    - name: Install dependencies
+      continue-on-error: true
+      run: |
+       # https://openwrt.org/docs/guide-developer/build-system/install-buildsystem
+        sudo -E apt-get -qq update
+        sudo -E apt-get -y install subversion build-essential libncurses5-dev zlib1g-dev gawk git ccache gettext libssl-dev xsltproc zip
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        
+    - name: Install UPX
+      run: |
+        cd /tmp
+        latest_version=$(wget -qO- https://api.github.com/repos/upx/upx/releases/latest | grep 'tag_name' | cut -d\" -f4)
+        wget --quiet --continue --show-progress https://github.com/upx/upx/releases/download/$latest_version/upx-${latest_version:1}-amd64_linux.tar.xz
+        tar xvJf upx*-amd64_linux.tar.xz
+        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin
+        rm -rf upx*
+        
+    - name: Prepare Golang
+      run: |
+        cd /tmp
+        #Download Latest Go
+        echo "Finding latest version of Go for AMD64..."
+        latest_version="$(wget -qO- https://golang.org/dl/|grep 'download downloadBox' | grep -oP '\d+\.\d+(\.\d+)?' | head -n 1)"
+        echo "Downloading latest Go for AMD64: ${latest_version}"
+        wget --quiet --continue --show-progress https://dl.google.com/go/go${latest_version}.linux-amd64.tar.gz
+        sudo tar -C /usr/local -xzf go${latest_version}.linux-amd64.tar.gz
+        rm -f go${latest_version}.linux-amd64.tar.gz
+        /usr/local/go/bin/go version
+        
+    - name: Prepare Toolchain
+      run: |
+        cd /tmp
+        #wget --no-check-certificate --quiet --continue --show-progress $(wget -qO- ${URL%/*} | grep -oP "openwrt\-sdk\-(\w|.|-)+?\.tar\.xz" | head -n 1)
+        wget --no-check-certificate --quiet --continue --show-progress $URL
+        tar xvJf openwrt-sdk-*.tar.xz
+        rm -f ${URL##*/}
+
+    - name: Ready
+      run: |
+        cd /tmp #路径过长容易报错。https://forum.openwrt.org/t/buid-package-uclibc-failed-by-using-openwrt-sdk/64377
+        core=$(cat /proc/cpuinfo|grep processor|wc -l)
+        dirn=$(pwd)
+        dirn1=${URL##*/}
+        dirn1=${dirn1%*${dirn1:(-7)}} 
+        if [ -d ${dirn1} ]; then
+          echo "#工具链解压文件夹 ${dirn1}"
+        else
+          echo "没有识别工具链解压文件夹!"
+          exit 127
+        fi
+        cd ${dirn1}
+        for i in staging_dir/* ;do
+          [[ ${i##*/} == "toolchain-"*_gcc* && -d $i ]]&&dirn2=${i##*/}
+        done
+        if [ ${dirn2} ]; then
+          echo "#编译器存放文件夹 ${dirn2}"
+        else
+          echo "没有识别出编译器存放文件夹!"
+          exit 127
+        fi
+        garch=${dirn2/toolchain-/}
+        garch=${garch%_gcc*}
+        if [ "$garch" ]; then
+          echo "#处理器平台架构为 ${garch}"
+        else
+          echo "没有识别出处理器平台架构!"
+          exit 127
+        fi
+        echo "#GCC编译器版本为 $(echo $dirn2|grep -oP '\d+\.\d+(\.\d+)?')"
+        for i in staging_dir/${dirn2}/bin/*-gcc; do
+          target_host=$(echo ${i##*/}|grep -oP "\w+\-\w+\-\w+")
+        done
+        if [ ${target_host} ]; then
+          echo "#编译器目标主机 ${target_host}"
+        else
+          echo "没有识别出编译器!"
+          exit 127
+        fi
+        cat >/tmp/export.sh<<EOF
+        export PATH=$PATH:/usr/local/go/bin:${dirn}/${dirn1}/staging_dir/${dirn2}/bin:/usr/local/go/bin
+        export GOROOT="/usr/local/go"
+        export GOTOOLDIR="/usr/local/go/pkg/tool/linux_amd64"
+        export STAGING_DIR=${dirn}/${dirn1}
+        export INSTALL_DIR=${dirn}/${dirn1}/staging_dir/${dirn2}
+        export TARGET_HOST=$target_host
+        export CORE=$core
+        EOF
+        sudo ln -s ${dirn}/${dirn1}/staging_dir/${dirn2}/bin/$target_host-gcc ${dirn}/${dirn1}/staging_dir/${dirn2}/bin/arm-linux-musleabi-gcc
+
+    - name: ptunnel-ng
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/lnslbrty/ptunnel-ng
+        cd ptunnel-ng
+        autoreconf -fiv
+        ./configure --host=$TARGET_HOST --prefix=/tmp/upload
+        make install
+        make clean
+
+    - name: mbedtls
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/ARMmbed/mbedtls
+        cd mbedtls
+        make no_test AR="$TARGET_HOST-ar" CC="$TARGET_HOST-gcc" CXX="$TARGET_HOST-gcc++" -j$CORE
+        make install DESTDIR=$INSTALL_DIR
+        make clean
+        
+    - name: libsodium
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/jedisct1/libsodium --branch stable
+        cd libsodium
+        ./autogen.sh
+        ./configure --host=$TARGET_HOST --prefix=$INSTALL_DIR
+        make -j$CORE
+        make install
+        make clean
+    
+    - name: libev
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        latest_version="$(wget -qO- http://dist.schmorp.de/libev/|grep -oP 'libev\-\d+\.\d+\.tar\.gz' | head -n 1)"
+        [ -z ${latest_version} ]&&exit 127
+        wget --quiet --continue --show-progress http://dist.schmorp.de/libev/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        cd ${latest_version/.tar.gz/}
+        chmod +x autogen.sh
+        ./autogen.sh
+        ./configure --host=$TARGET_HOST --prefix=$INSTALL_DIR
+        make -j$CORE
+        make install
+        make clean
+    
+    - name: libcares
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/c-ares/c-ares
+        cd c-ares
+        ./buildconf
+        ./configure --host=$TARGET_HOST --prefix=$INSTALL_DIR
+        make -j$CORE
+        make install
+        make clean
+        
+    - name: libpcre
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        latest_version="$(wget -qO- https://ftp.pcre.org/pub/pcre/|grep -oP 'pcre\-\d+\.\d+\.zip' | tail -n 1)"
+        [ -z ${latest_version} ]&&exit 127
+        wget --quiet --continue --show-progress https://ftp.pcre.org/pub/pcre/${latest_version}
+        unzip -qq ${latest_version}
+        rm -f ${latest_version}
+        cd ${latest_version/.zip/}
+        ./configure --host=$TARGET_HOST --prefix=$INSTALL_DIR
+        make -j$CORE
+        make install
+        make clean
+        
+    - name: simple-obfs
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/shadowsocks/simple-obfs
+        cd simple-obfs
+        git submodule update --init --recursive --depth 1
+        ./autogen.sh
+        ./configure \
+        --disable-documentation \
+        --host=$TARGET_HOST \
+        --with-ev=$INSTALL_DIR \
+        --prefix=/tmp/upload
+        #LDFLAGS="-Wl,-static -static -static-libgcc -L/usr/lib" \
+        #CFLAGS="-I/usr/include" LIBS="-lpthread -lm"
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lev/-l:libev.a/g' {} +
+        make -j$CORE
+        make install
+        make clean
+        cd ..
+
+    #- name: SSH connection to Actions
+      #uses: yiguihai/debugger-action@master
+        
+    - name: shadowsocks-libev
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/shadowsocks/shadowsocks-libev.git
+        cd shadowsocks-libev
+        git submodule update --init --recursive --depth 1
+        ./autogen.sh
+        ./configure \
+        --disable-documentation \
+        --with-ev=$INSTALL_DIR \
+        --with-sodium=$INSTALL_DIR \
+        --with-cares=$INSTALL_DIR \
+        --with-pcre=$INSTALL_DIR \
+        --with-mbedtls=$INSTALL_DIR \
+        --host=$TARGET_HOST \
+        --prefix=/tmp/upload
+        #LDFLAGS="-Wl,-static -static -static-libgcc -L/usr/lib" \
+        #CFLAGS="-I/usr/include" LIBS="-lpthread -lm"
+        #查找替换 链接第三方静态库
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lev  -lcares -lsodium -lmbedcrypto -lpcre/-l:libev.a  -l:libcares.a -l:libsodium.a -l:libmbedcrypto.a -l:libpcre.a/g' {} +
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lev -lsodium/-l:libev.a -l:libsodium.a/g' {} +
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lcares/-l:libcares.a/g' {} +
+        make -j$CORE
+        make install
+        make clean
+
+    - name: openssl
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        latest_version="$(wget -qO- https://www.openssl.org/source/|grep -oP 'openssl\-\d+\.\d+\.\d+\w+\.tar\.gz' | head -n 1)"
+        wget --quiet --continue https://www.openssl.org/source/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        cd ${latest_version/.tar.gz/}
+        ./Configure \
+        --cross-compile-prefix=${TARGET_HOST}- \
+        --prefix=$INSTALL_DIR \
+        linux-armv4
+        make -j$CORE
+        make install_sw
+        make distclean
+
+    - name: shadowsocks-rust
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        rustup update
+        rustc --version
+        rustup target list
+        git clone --depth 1 https://github.com/shadowsocks/shadowsocks-rust.git
+        cd shadowsocks-rust
+        sed -i '/\[profile\.release\]/a\opt-level \= \"z\"' Cargo.toml
+        rustup target add arm-unknown-linux-musleabi
+        mkdir -p .cargo
+        cat >.cargo/config<<EOF
+        [target.arm-unknown-linux-musleabi]
+        linker = "${TARGET_HOST}-gcc"
+        ar = "${TARGET_HOST}-ar"
+        EOF
+        #cargo install cross
+        #https://users.rust-lang.org/t/how-to-link-openssl-statically/14912
+        #https://docs.rs/openssl/0.10.30/openssl/
+        env OPENSSL_STATIC=yes OPENSSL_LIB_DIR=$INSTALL_DIR/lib OPENSSL_INCLUDE_DIR=$INSTALL_DIR/include SODIUM_LIB_DIR=$INSTALL_DIR/lib SODIUM_INCLUDE_DIR=$INSTALL_DIR/include cargo build --release --target arm-unknown-linux-musleabi --features "aes-pmac-siv openssl-vendored sodium rc4 aes-cfb aes-ctr local-http local-http-native-tls local-tunnel local-socks4 local-redir" --no-default-features
+        for i in sslocal ssserver ssurl ssmanager;do
+          cp -f target/arm-unknown-linux-musleabi/release/$i /tmp/upload/bin
+        done
+
+    - name: vlmcsd
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/Wind4/vlmcsd
+        cd vlmcsd
+        git submodule update --init --recursive --depth 1
+        make AR="$TARGET_HOST-ar" CC="$TARGET_HOST-gcc" CXX="$TARGET_HOST-gcc++" -j$CORE
+        mv -f bin/vlmcs bin/vlmcsd /tmp/upload/bin
+
+    - name: dns2socks
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        wget --quiet --continue --show-progress https://cfhcable.dl.sourceforge.net/project/dns2socks/SourceCode.zip
+        unzip -qq SourceCode.zip
+        cd DNS2SOCKS
+        ${TARGET_HOST}-gcc *.c -o dns2socks -I. -lpthread
+        mv -f dns2socks /tmp/upload/bin
+
+    - name: chinadns-ng
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/zfl9/chinadns-ng
+        cd chinadns-ng
+        make AR="$TARGET_HOST-ar" CC="$TARGET_HOST-gcc" CXX="$TARGET_HOST-gcc++" -j$CORE
+        make install DESTDIR=/tmp/upload/bin
+        make clean
+
+    - name: ipt2socks
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/zfl9/ipt2socks
+        cd ipt2socks
+        make AR="$TARGET_HOST-ar" CC="$TARGET_HOST-gcc" CXX="$TARGET_HOST-gcc++" -j$CORE
+        make install DESTDIR=/tmp/upload/bin
+        make clean
+
+    - name: proxychains-ng
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/rofl0r/proxychains-ng
+        cd proxychains-ng
+        ./configure --host=$TARGET_HOST --prefix=/tmp/upload
+        make AR="$TARGET_HOST-ar" CC="$TARGET_HOST-gcc" CXX="$TARGET_HOST-gcc++" -j$CORE
+        make install
+        $TARGET_HOST-strip /tmp/upload/lib/libproxychains4.so
+        make clean
+
+    - name: UnblockNeteaseMusic
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/cnsilvan/UnblockNeteaseMusic
+        cd UnblockNeteaseMusic
+        sed -i 's/go\ /\/usr\/local\/go\/bin\/go\ /g' build.sh
+        chmod +x build.sh
+        env AR="${TARGET_HOST}-ar" CC="${TARGET_HOST}-gcc" CXX="${TARGET_HOST}-gcc++" CGO_ENABLED=1 GO111MODULE=auto GOOS=${TARGET_HOST##*-} GOARCH=arm ./build.sh
+        mv -f bin/UnblockNeteaseMusic /tmp/upload/bin
+
+    - name: pingtunnel
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/esrrhs/pingtunnel
+        cd pingtunnel
+        /usr/local/go/bin/go get -d -v ./...
+        env AR="${TARGET_HOST}-ar" CC="${TARGET_HOST}-gcc" CXX="${TARGET_HOST}-gcc++" CGO_ENABLED=1 GO111MODULE=auto GOOS=${TARGET_HOST##*-} GOARCH=arm /usr/local/go/bin/go build -ldflags "-s -w" -o pingtunnel
+        mv -f pingtunnel /tmp/upload/bin
+
+    - name: kcptun
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone https://github.com/xtaci/kcptun.git
+        cd kcptun
+        VERSION=`date -u +%Y%m%d`
+        LDFLAGS_LINUX='-X main.VERSION='$VERSION' -s -w'
+        CC="${TARGET_HOST}-gcc" CXX="${TARGET_HOST}-gcc++" GOOS=${TARGET_HOST##*-} GOARCH=arm CGO_ENABLED=1 /usr/local/go/bin/go build -ldflags "$LDFLAGS_LINUX" -o kcptun_client  github.com/xtaci/kcptun/client
+        CC="${TARGET_HOST}-gcc" CXX="${TARGET_HOST}-gcc++" GOOS=${TARGET_HOST##*-} GOARCH=arm CGO_ENABLED=1 /usr/local/go/bin/go build -ldflags "$LDFLAGS_LINUX" -o kcptun_server  github.com/xtaci/kcptun/server
+        mv -f kcptun_client kcptun_server /tmp/upload/bin
+        /usr/local/go/bin/go get -u github.com/shadowsocks/kcptun
+        /usr/local/go/bin/go get -u ./...
+        git clone https://github.com/shadowsocks/kcptun
+        cd kcptun
+        sed -i '124c EnvVar: "KCPTUN_KEY",' client/main.go
+        gofmt -w client/main.go
+        CC="${TARGET_HOST}-gcc" CXX="${TARGET_HOST}-gcc++" GO111MODULE=on CGO_ENABLED=1 GOOS=${TARGET_HOST##*-} GOARCH=arm /usr/local/go/bin/go build -mod=mod -ldflags "$LDFLAGS_LINUX" -o kcptun_sip003_client ./client
+        CC="${TARGET_HOST}-gcc" CXX="${TARGET_HOST}-gcc++" GO111MODULE=on CGO_ENABLED=1 GOOS=${TARGET_HOST##*-} GOARCH=arm /usr/local/go/bin/go build -mod=mod -ldflags "$LDFLAGS_LINUX" -o kcptun_sip003_server ./server
+        mv -f kcptun_sip003_client kcptun_sip003_server /tmp/upload/bin
+
+    - name: iperf
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        git clone --depth 1 https://github.com/esnet/iperf
+        cd iperf
+        ./configure --host=${TARGET_HOST} --enable-static-bin --without-openssl --prefix=/tmp/upload
+        make
+        make install
+        make clean
+
+    - name: Compressed files
+      continue-on-error: true
+      run: |
+        cd /tmp
+        . /tmp/export.sh
+        for f in /tmp/upload/bin/*; do
+          ret=$(file $f)
+          if [ "${ret##*\, }" = 'not stripped' ]; then
+            $TARGET_HOST-strip $f
+          fi
+          if [[ "$ret" = *LSB* || "$ret" = *SYSV* ]]; then
+            file $f
+            $TARGET_HOST-readelf -d $f
+            if [ "${f##*\/}" != 'proxychains4' ]; then
+              upx --best --ultra-brute -v $f
+            fi
+          fi
+        done
+
+    - name: Upload artifact
+      if: success()
+      uses: actions/upload-artifact@master
+      with:
+        name: build-package
+        path: /tmp/upload
