@@ -1862,7 +1862,7 @@
 /* #undef PHP_BUILD_PROVIDER */
 
 /* builder uname output */
-#define PHP_BUILD_SYSTEM "Linux fv-az175-703 4.15.0-1098-azure #109~16.04.1-Ubuntu SMP Wed Sep 30 18:53:14 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux"
+#define PHP_BUILD_SYSTEM "Linux fv-az49-179 4.15.0-1098-azure #109~16.04.1-Ubuntu SMP Wed Sep 30 18:53:14 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux"
 
 /* Define if your system has fork/vfork/CreateProcess */
 #define PHP_CAN_SUPPORT_PROC_OPEN 1
@@ -1958,7 +1958,7 @@
 #define PHP_SIGCHILD 0
 
 /* uname -a output */
-#define PHP_UNAME "Linux fv-az175-703 4.15.0-1098-azure #109~16.04.1-Ubuntu SMP Wed Sep 30 18:53:14 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux"
+#define PHP_UNAME "Linux fv-az49-179 4.15.0-1098-azure #109~16.04.1-Ubuntu SMP Wed Sep 30 18:53:14 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux"
 
 /* Whether PHP has to use its own crypt_r for blowfish, des and ext des */
 #define PHP_USE_PHP_CRYPT_R 1
