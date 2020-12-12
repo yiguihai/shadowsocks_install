@@ -1039,7 +1039,7 @@ Update_core() {
 	echo
 	sha512sum -c $temp_file
 	if [ $? -ne 0 ]; then
-		for x in ${Binary_file_list[@]} nginx; do
+		for x in ${Binary_file_list[@]} nginx php-fpm; do
 			rm -f $HOME_DIR/bin/$x
 		done
 		Check
@@ -1287,6 +1287,10 @@ Start_nginx_program() {
 		Wget_get_files $HOME_DIR/bin/nginx $URL/tools/nginx
 		chmod +x $HOME_DIR/bin/nginx
 	fi
+	if [ ! -f $HOME_DIR/bin/php-fpm ] || [ ! -x $HOME_DIR/bin/php-fpm ]; then
+		Wget_get_files $HOME_DIR/bin/php-fpm $URL/php/sbin/php-fpm
+		chmod +x $HOME_DIR/bin/php-fpm
+	fi
 	if [ ! -d /var/log/nginx ]; then
 		mkdir -p /var/log/nginx
 	else
@@ -1340,9 +1344,14 @@ Start_nginx_program() {
 	if [ ! -s $HOME_DIR/conf/mime.types ]; then
 		Wget_get_files $HOME_DIR/conf/mime.types $URL/nginx/conf/mime.types
 	fi
-	for i in v2safe.conf security.conf v2ray-plugin.conf proxy.conf nginx.conf general.conf; do
+	for i in v2safe.conf security.conf v2ray-plugin.conf proxy.conf nginx.conf general.conf fastcgi_params.conf; do
 		if [ ! -s $HOME_DIR/conf/$i ]; then
 			Wget_get_files $HOME_DIR/conf/$i $URL/nginx/myself/$i
+		fi
+	done
+	for i in php-fpm.conf www.conf; do
+		if [ ! -s $HOME_DIR/conf/$i ]; then
+			Wget_get_files $HOME_DIR/conf/$i $URL/php/myself/$i
 		fi
 	done
 	for i in 50x.html index.html; do
@@ -1351,11 +1360,15 @@ Start_nginx_program() {
 		fi
 	done
 	sed -i "/server_name/c\    server_name         $tls_common_name;" $HOME_DIR/conf/v2ray-plugin.conf
-	if ! nginx -c $HOME_DIR/conf/nginx.conf -t; then
-		Prompt "请检查nginx配置是否有误"
+	if ! php-fpm -n -y $HOME_DIR/conf/php-fpm.conf -R; then
+		Prompt "请检查php-fpm配置是否有误"
 	else
-		nginx -c $HOME_DIR/conf/nginx.conf
-		Prompt "请将你的客户端v2ray插件websocket-http模式的节点服务器选项改为 \"你的域名或者CDN节点IP\" 端口改为 \"80\" 现在访问你的域名 http://$tls_common_name 应该可以看到nginx的首页了"
+		if ! nginx -c $HOME_DIR/conf/nginx.conf -t; then
+			Prompt "请检查nginx配置是否有误"
+		else
+			nginx -c $HOME_DIR/conf/nginx.conf
+			Prompt "请将你的客户端v2ray插件websocket-http模式的节点服务器选项改为 \"你的域名或者CDN节点IP\" 端口改为 \"80\" 现在访问你的域名 http://$tls_common_name 应该可以看到nginx的首页了"
+		fi
 	fi
 }
 
@@ -1386,6 +1399,12 @@ Advanced_features() {
 		fi
 		if [ -d /proc/${ngx:=nginxx} ]; then
 			echo -e "\033[1mnginx运行中 PID: \033[0m\033[7m$ngx\033[0m"
+		fi
+		if [ -s /run/php-fpm.pid ]; then
+			read pfm </run/php-fpm.pid
+		fi
+		if [ -d /proc/${pfm:=pfmcj} ]; then
+			echo -e "\033[1mphp-fpm运行中 PID: \033[0m\033[7m$pfm\033[0m"
 		fi
 		cat <<EOF
 
@@ -1471,6 +1490,7 @@ EOF
 			;;
 		14)
 			pkill -F /run/nginx.pid && rm -f /run/nginx.pid
+			pkill -F /run/php-fpm.pid && rm -f /run/php-fpm.pid
 			;;
 		15)
 			Introduction "确定要更新吗?注意申请次数限制 (Y/N)"
