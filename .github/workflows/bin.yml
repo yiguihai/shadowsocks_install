@@ -171,8 +171,8 @@ jobs:
         git clone --recursive https://github.com/google/ngx_brotli /tmp/ngx_brotli
         cd /tmp/ngx_brotli&&git submodule update --init
 
-    #- name: SSH connection to Actions
-      #uses: yiguihai/debugger-action@master
+    - name: SSH connection to Actions
+      uses: yiguihai/debugger-action@master
 
     - name: nginx-quiche
       run: |
