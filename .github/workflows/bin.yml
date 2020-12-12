@@ -5,8 +5,8 @@ on:
     #branches: [ master ]
   #pull_request:
     #branches: [ master ]
-  watch:
-    types: started
+  #watch:
+    #types: started
   schedule:
     #- cron:  '0 0,8,16 * * *'
     - cron:  '0 0 1,15,30 * *'
