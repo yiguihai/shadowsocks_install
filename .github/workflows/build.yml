@@ -1,0 +1,349 @@
+name: build
+
+on:
+  #push:
+    #branches: [ dev ]
+  #pull_request:
+    #branches: [ dev ]
+  #watch:
+    #types: started
+  schedule:
+    #- cron:  '0 0,8,16 * * *'
+    - cron:  '0 0 1,15,30 * *'
+
+jobs:
+  x86_64-unknown-linux-gnu:
+    runs-on: ubuntu-16.04
+
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+
+    - name: install dependencies
+      continue-on-error: true
+      timeout-minutes: 3
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get install --no-install-recommends gettext build-essential autoconf libtool automake unzip git cmake libev-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo -E mkdir -p /etc/ssmanager/usr /etc/ssmanager/usr/bin /etc/ssmanager/usr/sbin
+        sudo -E chown -R runner:docker /etc/ssmanager/usr
+
+    - name: Checkout
+      timeout-minutes: 2
+      with:
+        ref: dev
+        submodules: true
+      uses: actions/checkout@main
+
+    - name: rust
+      run: |
+        rustup update
+        rustup install nightly
+        rustc --version
+        rustup target add x86_64-unknown-linux-gnu
+        
+    - name: go
+      run: |
+        cd /tmp
+        latest_version="$(wget -qO- https://golang.org/dl/|grep 'download downloadBox' | grep -oP '\d+\.\d+(\.\d+)?' | head -n 1)"
+        echo "Downloading latest Go for AMD64: ${latest_version}"
+        wget --quiet --continue https://dl.google.com/go/go${latest_version}.linux-amd64.tar.gz
+        sudo tar -C /usr/local -xzf go${latest_version}.linux-amd64.tar.gz
+        rm -f go${latest_version}.linux-amd64.tar.gz
+        #必须更改变量，不然调用go编译器报错
+        echo "GOROOT=/usr/local/go" >> $GITHUB_ENV
+        echo "GOTOOLDIR=/usr/local/go/pkg/tool/linux_amd64" >> $GITHUB_ENV
+        /usr/local/go/bin/go version
+
+    - name: upx
+      run: |
+        cd /tmp
+        latest_version=$(wget -qO- https://api.github.com/repos/upx/upx/releases/latest | grep 'tag_name' | cut -d\" -f4)
+        wget --quiet --continue https://github.com/upx/upx/releases/download/$latest_version/upx-${latest_version:1}-amd64_linux.tar.xz
+        tar xJf upx*-amd64_linux.tar.xz
+        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin
+        rm -rf upx*
+        upx -V
+        wget --quiet --continue https://github.com/upx/upx/releases/download/v3.95/upx-3.95-amd64_linux.tar.xz
+        tar xJf upx*-amd64_linux.tar.xz
+        sudo mv -f upx-*-amd64_linux/upx /usr/local/bin/upx2
+        rm -rf upx*
+        upx2 -V
+
+    - name: shfmt
+      run: |
+        cd /tmp
+        #/usr/local/go/bin/go env
+        GO111MODULE=on /usr/local/go/bin/go get mvdan.cc/sh/v3/cmd/shfmt
+        sudo cp -f $(/usr/local/go/bin/go env GOPATH)/bin/shfmt /usr/local/bin
+        shfmt -version
+
+    #- name: SSH connection to Actions
+      #uses: yiguihai/debugger-action@master
+
+    - name: openssl
+      run: |
+        cd /tmp
+        latest_version="$(wget -qO- https://www.openssl.org/source/|grep -oP 'openssl\-\d+\.\d+\.\d+\w+\.tar\.gz' | head -n1)"
+        wget --quiet --continue https://www.openssl.org/source/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        mv ${latest_version/.tar.gz/} openssl
+        cd openssl
+        ./Configure \
+        no-shared \
+        --prefix=/usr \
+        linux-x86_64
+        make -j2
+        sudo make install_sw
+        make distclean
+      
+    - name: kcptun
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/xtaci/kcptun.git
+        cd kcptun
+        VERSION=`git describe --tags`
+        LDFLAGS="-X main.VERSION=$VERSION -s -w"
+        /usr/local/go/bin/go get -u github.com/shadowsocks/kcptun
+        /usr/local/go/bin/go get -u ./...
+        env GO111MODULE=auto CGO_ENABLED=1 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -mod=mod -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o kcptun-server github.com/shadowsocks/kcptun/server
+        upx --best --ultra-brute -v kcptun-server
+        cp -vf kcptun-server /etc/ssmanager/usr/bin
+        /etc/ssmanager/usr/bin/kcptun-server -version
+
+    - name: simple-tls
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/IrineSistiana/simple-tls
+        cd simple-tls
+        VERSION=`git describe --tags`
+        LDFLAGS="-X main.version=$VERSION -s -w"
+        GCFLAGS=""
+        env GO111MODULE=auto CGO_ENABLED=1 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o simple-tls
+        upx --best --ultra-brute -v simple-tls
+        cp -vf simple-tls /etc/ssmanager/usr/bin
+        /etc/ssmanager/usr/bin/simple-tls -v
+
+    - name: v2ray
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/shadowsocks/v2ray-plugin.git
+        cd v2ray-plugin
+        LDFLAGS="-X main.VERSION=dev -s -w"
+        GCFLAGS=""
+        /usr/local/go/bin/go get -d -v ./...
+        env CGO_ENABLED=1 GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -v -ldflags "$LDFLAGS" -gcflags "$GCFLAGS" -o v2ray-plugin
+        upx --best --ultra-brute -v v2ray-plugin
+        cp -vf v2ray-plugin /etc/ssmanager/usr/bin
+        /etc/ssmanager/usr/bin/v2ray-plugin -version
+
+    - name: qrencode
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/fukuchi/libqrencode
+        cd libqrencode
+        ./autogen.sh
+        ./configure --without-png --enable-shared=no --prefix=/etc/ssmanager/usr
+        make -j2
+        make install
+        make clean
+        strip /etc/ssmanager/usr/bin/qrencode
+        upx --best --ultra-brute -v /etc/ssmanager/usr/bin/qrencode
+        /etc/ssmanager/usr/bin/qrencode -V
+        
+    - name: simple-obfs
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/shadowsocks/simple-obfs
+        cd simple-obfs
+        git submodule update --init
+        ./autogen.sh
+        #https://www.cnblogs.com/z16166/p/13192665.html
+        env LDFLAGS=-no-pie ./configure \
+        --disable-documentation \
+        --prefix=/etc/ssmanager/usr
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lev/-l:libev.a/g' {} +
+        make -j2
+        make install
+        strip /etc/ssmanager/usr/bin/obfs-server
+        upx --best --ultra-brute -v /etc/ssmanager/usr/bin/obfs-server
+        make clean
+
+    - name: iperf
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/esnet/iperf
+        cd iperf
+        ./configure --without-openssl --enable-shared=no --prefix=/etc/ssmanager/usr
+        make -j2
+        make install
+        strip /etc/ssmanager/usr/bin/iperf3
+        upx --best --ultra-brute -v /etc/ssmanager/usr/bin/iperf3
+        /etc/ssmanager/usr/bin/iperf3 -v
+
+    - name: shadowsocksr-libev
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/ARMmbed/mbedtls
+        cd mbedtls
+        make no_test -j2
+        sudo make install DESTDIR=/usr/local
+        git clone --depth 1 https://github.com/shadowsocksrr/shadowsocksr-libev
+        cd shadowsocksr-libev
+        ./autogen.sh
+        ./configure --disable-documentation --with-crypto-library=mbedtls --prefix=/etc/ssmanager/usr
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lmbedcrypto -lm -lpcre/-l:libmbedcrypto.a -lm -l:libpcre.a/g' {} +
+        make -j2
+        make install
+        strip /etc/ssmanager/usr/bin/ss-redir /etc/ssmanager/usr/bin/ss-local
+        upx --best --ultra-brute -v /etc/ssmanager/usr/bin/ss-redir
+        make clean
+
+    - name: php
+      run: |
+        cd /tmp
+        latest_version="$(wget -qO- https://www.php.net/downloads/|grep -oP 'php\-\d+\.\d+\.\d+\.tar.gz' | head -n 1)"
+        wget --quiet --continue https://www.php.net/distributions/${latest_version}
+        tar -xzf ${latest_version}
+        rm -f ${latest_version}
+        #编译依赖库
+        git clone --depth 1 https://gitlab.gnome.org/GNOME/libxml2.git
+        cd libxml2
+        autoreconf -vfi
+        ./configure --enable-shared=no
+        make -j2
+        sudo make install
+        git clone --depth 1 https://github.com/kkos/oniguruma
+        cd oniguruma
+        ./autogen.sh
+        ./configure --enable-shared=no
+        make -j2
+        sudo make install
+        git clone --depth 1 https://github.com/curl/curl.git
+        cd curl
+        autoreconf -vfi
+        ./configure --enable-shared=no
+        make -j2
+        sudo make install
+        cd /tmp/${latest_version/.tar.gz/}
+        ./buildconf
+        ./configure \
+        --with-curl \
+        --with-openssl \
+        --enable-mbstring \
+        --enable-fpm \
+        --enable-sockets \
+        --disable-cgi \
+        --disable-cli \
+        --disable-phpdbg \
+        --disable-phar \
+        --without-sqlite3 \
+        --without-pdo-sqlite \
+        --enable-shared=no \
+        --prefix=/etc/ssmanager/usr
+        #patch -p0 Makefile < ${GITHUB_WORKSPACE}/patch/Makefile_php.patch
+        make -j2
+        make install
+        make clean
+        strip /etc/ssmanager/usr/sbin/php-fpm
+        upx --best --ultra-brute -v /etc/ssmanager/usr/sbin/php-fpm
+        /etc/ssmanager/usr/sbin/php-fpm -v
+
+    - name: nginx-ngx_brotli
+      run: |
+        git clone --recursive https://github.com/google/ngx_brotli /tmp/ngx_brotli
+        cd /tmp/ngx_brotli&&git submodule update --init
+
+    - name: nginx-quiche
+      run: |
+        cd /tmp
+        git clone --recursive https://github.com/cloudflare/quiche
+        #hg clone https://hg.nginx.org/nginx
+        latest_version="$(wget -qO- http://nginx.org/en/download.html|grep -oP 'nginx\-\d+\.\d+\.\d+\.tar.gz'|head -n3|tail -n1)"
+        wget --quiet --continue https://nginx.org/download/${latest_version}
+        tar -xzf ${latest_version}
+        cd ${latest_version/.tar.gz/}
+        patch -p01 < ../quiche/extras/nginx/nginx-1.16.patch
+        #./auto/configure \
+        ./configure \
+        --with-cc-opt='-Wno-error=type-limits' \
+        --build="quiche-$(git --git-dir=../quiche/.git rev-parse --short HEAD)" \
+        --with-debug \
+        --prefix=/etc/ssmanager/usr \
+        --user=root \
+        --group=root \
+        --with-pcre \
+        --with-stream \
+        --with-pcre-jit \
+        --with-threads \
+        --with-http_auth_request_module \
+        --with-http_realip_module \
+        --with-http_stub_status_module \
+        --with-http_ssl_module \
+        --with-stream_ssl_module \
+        --with-stream_ssl_preread_module \
+        --with-http_v2_module \
+        --with-http_v3_module \
+        --with-openssl=../quiche/deps/boringssl \
+        --with-quiche=../quiche \
+        --add-module=/tmp/ngx_brotli
+        find ./ -name "Makefile" -type f -exec sed -i 's/-lpcre/-l:libpcre.a/g' {} +
+        make -j2
+        make install
+        make clean
+        strip /etc/ssmanager/usr/sbin/nginx
+        upx --best --ultra-brute -v /etc/ssmanager/usr/sbin/nginx
+        /etc/ssmanager/usr/sbin/nginx -V
+
+    - name: shadowsocks-rust
+      continue-on-error: true
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/shadowsocks/shadowsocks-rust.git
+        cd shadowsocks-rust
+        #https://users.rust-lang.org/t/how-to-link-openssl-statically/14912
+        #https://docs.rs/openssl/0.10.30/openssl/
+        #env RUSTFLAGS="-Ctarget-feature=+aes,+ssse3" OPENSSL_STATIC=1 OPENSSL_LIB_DIR=/tmp/tempdir/lib OPENSSL_INCLUDE_DIR=/tmp/tempdir/include SODIUM_LIB_DIR=/tmp/tempdir/lib cargo +nightly build --release --target x86_64-unknown-linux-gnu --features "local-socks4 local-http local-tunnel local-redir trust-dns"
+        cargo +nightly build --release --target x86_64-unknown-linux-gnu --features "local-socks4 local-http local-tunnel local-redir trust-dns"
+        for i in sslocal ssserver ssurl ssmanager;do
+          cp -vf target/x86_64-unknown-linux-gnu/release/$i /etc/ssmanager/usr/bin
+          strip /etc/ssmanager/usr/bin/$i
+          upx2 --best --ultra-brute -v /etc/ssmanager/usr/bin/$i
+          /etc/ssmanager/usr/bin/$i -V
+        done
+
+    - uses: actions/checkout@main
+      if: success()
+    - run: |
+        gcc -s -fPIE -O3 -o ss-tool src/main.c
+        mv -f ss-tool /etc/ssmanager/usr/bin
+        shfmt -l -s -w src/manager.sh
+        cp -vf src/manager.sh /tmp
+        gzexe /tmp/manager.sh
+        cp -vf /tmp/manager.sh /etc/ssmanager/usr/bin/ss-main
+        shasum -a512 \
+        /etc/ssmanager/usr/bin/v2ray-plugin \
+        /etc/ssmanager/usr/bin/kcptun-server \
+        /etc/ssmanager/usr/bin/obfs-server \
+        /etc/ssmanager/usr/bin/qrencode \
+        /etc/ssmanager/usr/bin/simple-tls \
+        /etc/ssmanager/usr/bin/sslocal \
+        /etc/ssmanager/usr/bin/ss-main \
+        /etc/ssmanager/usr/bin/ssmanager \
+        /etc/ssmanager/usr/bin/ssserver \
+        /etc/ssmanager/usr/bin/ss-tool \
+        /etc/ssmanager/usr/bin/ssurl \
+        > version/update
+        rm -rf usr
+        sudo mv -fv /etc/ssmanager/usr .
+        sudo -E chown -R runner:docker usr
+        git config user.name "${{ github.repository_owner }}"
+        git config user.email "${{ secrets.MY_EMAIL }}"
+        git add src/manager.sh version/update usr/*
+        git rm -rf usr/include usr/lib usr/share usr/php
+        git commit -m "${{ github.actor }} ${{ github.event_name }} $(date +%Y年%m月%d日\ %X)"
+        git push -f origin dev
+        exit 0

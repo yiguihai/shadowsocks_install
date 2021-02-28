@@ -1,0 +1,45 @@
+name: update
+
+on:
+  watch:
+    types: started
+
+jobs:
+  x86_64-unknown-linux-gnu:
+    runs-on: ubuntu-16.04
+
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+
+    - name: Checkout
+      timeout-minutes: 2
+      with:
+        ref: dev
+        submodules: true
+      uses: actions/checkout@main
+
+    - uses: actions/checkout@main
+      if: success()
+      env:
+        run_id: ${{ github.id }}
+    - run: |
+        gzexe src/manager.sh
+        sudo -E timedatectl set-timezone "Asia/Shanghai"
+        sudo -E timedatectl set-ntp true
+        echo "::add-mask::${{ github.repository_owner }}"
+        #https://stackoverflow.com/a/5773761/15058248
+        old_shasum=($(shasum -a512 usr/bin/ss-main))
+        gzexe src/manager.sh
+        mv -f src/manager.sh usr/bin/ss-main
+        new_shasum=($(shasum -a512 usr/bin/ss-main))
+        if [ $old_shasum != $new_shasum ]; then
+          sed -i "s/$old_shasum/$new_shasum/g" version/update
+          git add usr/bin/ss-main version/update
+          git config user.name "${{ github.repository_owner }}"
+          git config user.email "${{ secrets.MY_EMAIL }}"
+          git commit -m "${{ github.actor }} ${{ github.event_name }} $(date +%Y年%m月%d日\ %X)"
+          git push -f origin dev
+        else
+          echo "脚本未发现任何改动"
+        fi
